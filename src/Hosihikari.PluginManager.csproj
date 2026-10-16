@@ -17,6 +17,8 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.13" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.13" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.13" />
+    <!-- 兜底的落地端：原生宿主接不上 .NET 的 logger factory，没有它插件的日志会写进虚空。 -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
   </ItemGroup>
 
   <!-- 契约来自另一个仓，两种拿法二选一：并列摆放时直接编在一起（改契约不用重新打包），

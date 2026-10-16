@@ -154,7 +154,8 @@ public sealed class PluginManagerHost
         }
         catch (Exception ex)
         {
-            _report($"{manifest.Name}: 加载抛出 —— {ex.Message}");
+            // 带完整异常：在别人的进程里没有调试器，消息本身就是唯一的线索（ADR-0009 的可见通道）。
+            _report($"{manifest.Name}: 加载抛出 —— {ex}");
             return;
         }
 
