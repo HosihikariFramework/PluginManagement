@@ -19,6 +19,12 @@ public sealed class FooPlugin : IPlugin
 
         File.WriteAllText(Path.Combine(context.DataDirectory, "carrier.txt"), seen);
 
+        // 探针：Foo 这边的 Lib 是哪一份（ADR-0026）。
+        var lib = typeof(Lib.Marker).Assembly;
+        File.WriteAllText(
+            Path.Combine(context.DataDirectory, "lib.txt"),
+            $"{lib.Location} | {System.Runtime.Loader.AssemblyLoadContext.GetLoadContext(lib)?.Name}");
+
         // 配置按「包内默认 → 包外覆盖」叠好交过来（ADR-0018）。
         File.WriteAllText(
             Path.Combine(context.DataDirectory, "greeting.txt"),

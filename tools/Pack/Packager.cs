@@ -16,10 +16,18 @@ public readonly record struct PackResult(bool Succeeded, string? PackageDirector
 /// </summary>
 public static class Packager
 {
-    /// <summary>共享层里的程序集不许出现在插件包里 —— 它们由宿主的共享层提供。</summary>
-    public static readonly string[] SharedLayerAssemblies = ["Hosihikari.Abstractions.dll"];
-
-    public static PackResult Pack(string sourceDirectory, string manifestPath, string outputRoot)
+    /// <summary>
+    /// 装配一个包。
+    ///
+    /// <paramref name="sharedLayer"/> 是目标载体的共享层程序集名清单，与运行期
+    /// <c>AssemblyPluginProvider</c> 拿到的那份必须同源（ADR-0021 / 0026）。这里要的是文件名，
+    /// 因为打包期只看得见构建输出里的文件名。
+    /// </summary>
+    public static PackResult Pack(
+        string sourceDirectory,
+        string manifestPath,
+        string outputRoot,
+        IReadOnlyList<string> sharedLayer)
     {
         var problems = new List<string>();
 
@@ -58,16 +66,18 @@ public static class Packager
         }
 
         // 共享层副本（ADR-0004 / 0019）—— 这条是静默失败的那条，所以放在打包期拦。
+        // 注意它可能是**传递**来的：作者只直接引用契约，而契约又牵进别的共享层程序集时
+        // 一样会出现在构建输出里，所以这里对整份输出逐文件比对，不看是谁带进来的。
         var offenders = Directory
             .EnumerateFiles(sourceDirectory, "*.dll", SearchOption.TopDirectoryOnly)
             .Select(Path.GetFileName)
-            .Where(file => Array.Exists(SharedLayerAssemblies, shared => shared == file))
+            .Where(file => sharedLayer.Contains(file))
             .ToArray();
         if (offenders.Length > 0)
         {
             problems.Add(
                 $"构建输出里带了共享层程序集（{string.Join(", ", offenders)}）—— " +
-                "引用契约时要 ExcludeAssets=\"runtime\"，否则插件包里是第二个类型身份");
+                "引用它们时要 ExcludeAssets=\"runtime\"，否则插件包里是第二个类型身份");
         }
 
         // 入口（ADR-0008）。编译器已经保证它与 IPlugin 和有无参构造是一致的，这里只确认它存在。
@@ -99,16 +109,30 @@ public static class Packager
         return new PackResult(true, packageDirectory, []);
     }
 
+    /// <summary>
+    /// 只读元数据，不把入口装进任何可执行上下文。
+    ///
+    /// `Assembly.LoadFrom` 做不到这一点：它把程序集装进**默认 ALC** 并且从此留在那里，
+    /// 而在同一个进程里再测插件行为时就被它污染了 —— 插件 ALC 的解析在
+    /// `PreferSharedTypes` 下会优先采纳"默认上下文里已经有了的那份"。
+    /// </summary>
     private static bool DeclaresEntryPoint(string entryPath, List<string> problems)
     {
         try
         {
-            // 反射读程序集而不载入它 —— 打包工具不该把插件的 ALC 带起来。
-            var inspection = Assembly.LoadFrom(Path.GetFullPath(entryPath));
-            var declared = inspection.GetCustomAttributes<EntryPointAttributeBase>().ToArray();
-            if (declared.Length != 1)
+            var full = Path.GetFullPath(entryPath);
+            var references = Directory.EnumerateFiles(Path.GetDirectoryName(full)!, "*.dll")
+                // 契约不在构建输出里（复制进去会被这条规则自己拦下），所以显式补上。
+                .Append(typeof(PluginContract).Assembly.Location)
+                .Concat(((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator));
+
+            using var metadata = new MetadataLoadContext(new PathAssemblyResolver(references));
+            var inspection = metadata.LoadFromAssemblyPath(full);
+
+            var declared = inspection.GetCustomAttributesData().Count(IsEntryPoint);
+            if (declared != 1)
             {
-                problems.Add($"{Path.GetFileName(entryPath)} 声明了 {declared.Length} 个入口 —— 需要恰好一个 [assembly: EntryPoint<T>]");
+                problems.Add($"{Path.GetFileName(entryPath)} 声明了 {declared} 个入口 —— 需要恰好一个 [assembly: EntryPoint<T>]");
                 return false;
             }
 
@@ -119,5 +143,19 @@ public static class Packager
             problems.Add($"读不了 {Path.GetFileName(entryPath)} 的入口声明：{ex.Message}");
             return false;
         }
+    }
+
+    /// <summary>按名字认，因为在只读元数据里契约是另一套类型对象。</summary>
+    private static bool IsEntryPoint(CustomAttributeData attribute)
+    {
+        for (var type = attribute.AttributeType; type is not null; type = type.BaseType)
+        {
+            if (type.FullName == typeof(EntryPointAttributeBase).FullName)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

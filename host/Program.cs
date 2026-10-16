@@ -21,6 +21,10 @@ var dataRoot = Path.Combine(stage, "data");
 var configRoot = Path.Combine(stage, "config", "hosihikari");
 var reported = new List<string>();
 
+// 目标载体的共享层清单。打包工具与运行期必须拿同一份 —— 一个来自这里，另一个来自
+// AssemblyPluginProvider 的构造（ADR-0021 / 0026）。这个宿主用的是替身载体绑定。
+var sharedLayer = new[] { "Hosihikari.Abstractions.dll", "Hosihikari.Bindings.Stub.dll" };
+
 Stage("Foo", withConfig: true);
 Stage("Bar", withConfig: false);
 StageBroken();
@@ -73,6 +77,16 @@ checks.Add(("A9 handler 抛出不影响其余 handler", heard == "ping", heard))
 var scheduledFile = Path.Combine(dataRoot, "Foo", "scheduled.txt");
 checks.Add(("A10 调度器的一次性任务执行", File.Exists(scheduledFile), File.Exists(scheduledFile) ? "已执行" : "没跑"));
 
+// A16：普通依赖（非契约、不在共享层）按 ALC 各一份 —— 这正是可卸载性的代价，
+// 也是"插件之间不共享类型"的另一面（ADR-0026）。
+var fooLib = File.ReadAllText(Path.Combine(dataRoot, "Foo", "lib.txt"));
+var barLib = File.ReadAllText(Path.Combine(dataRoot, "Bar", "lib.txt"));
+checks.Add((
+    "A16 普通依赖按 ALC 各一份",
+    fooLib != barLib,
+    $"Foo: {fooLib} ／ Bar: {barLib}"
+));
+
 // A11：两个测试插件都经打包工具装配成了包
 var packedOk = Directory.Exists(Path.Combine(pluginsRoot, "Foo")) && Directory.Exists(Path.Combine(pluginsRoot, "Bar"));
 checks.Add(("A11 打包工具产出包", packedOk, packedOk ? "Foo / Bar" : "缺包"));
@@ -84,7 +98,7 @@ File.Copy(
     Path.Combine(AppContext.BaseDirectory, "Hosihikari.Abstractions.dll"),
     Path.Combine(badSource, "Hosihikari.Abstractions.dll"),
     overwrite: true);
-var bad = Packager.Pack(badSource, Path.Combine(repoRoot, "test", "Foo", "manifest.json"), Path.Combine(stage, "bad-out"));
+var bad = Packager.Pack(badSource, Path.Combine(repoRoot, "test", "Foo", "manifest.json"), Path.Combine(stage, "bad-out"), sharedLayer);
 var sharedProblem = bad.Problems.FirstOrDefault(problem => problem.Contains("共享层"));
 checks.Add(("A12 打包拒绝共享层副本", !bad.Succeeded && sharedProblem is not null, sharedProblem ?? "（未拦下）"));
 
@@ -180,7 +194,7 @@ return checks.All(check => check.Passed) ? 0 : 1;
 void Stage(string name, bool withConfig)
 {
     var manifestPath = Path.Combine(repoRoot, "test", name, "manifest.json");
-    var packed = Packager.Pack(OutputDirectory(name), manifestPath, pluginsRoot);
+    var packed = Packager.Pack(OutputDirectory(name), manifestPath, pluginsRoot, sharedLayer);
     if (!packed.Succeeded)
     {
         reported.Add($"{name}: 打包失败 —— {string.Join("；", packed.Problems)}");

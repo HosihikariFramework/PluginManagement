@@ -17,4 +17,9 @@
     <PackageReference Include="Hosihikari.Abstractions" Version="[0.3.0]" ExcludeAssets="runtime" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 普通依赖：两个插件都引用它，它不是契约、不在共享层。 -->
+    <ProjectReference Include="../Lib/Lib.csproj" />
+  </ItemGroup>
+
 </Project>
