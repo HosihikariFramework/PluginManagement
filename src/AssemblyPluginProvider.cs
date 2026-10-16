@@ -1,17 +1,23 @@
 using System.Reflection;
 using McMaster.NETCore.Plugins;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace Hosihikari.PluginManagement;
 
 /// <summary>内置的程序集型 Provider（ADR-0002）。每个插件一个 collectible ALC，契约走共享层（ADR-0004 / ADR-0019）。</summary>
 public sealed class AssemblyPluginProvider(params Assembly[] sharedSources) : IPluginProvider
 {
-    // 共享层 = 契约 + 当前载体的绑定程序集（ADR-0019）。两侧的类型必须同身份，转型才成立。
+    // 共享层 = 契约 + 契约引用的抽象包 + 当前载体的绑定程序集（ADR-0007 / ADR-0019）。
+    // 两侧的类型必须同身份，转型与实现接口才成立；插件包里也不许有这些的副本。
     private readonly Type[] _sharedTypes =
     [
         typeof(IPlugin),
         typeof(IPluginContext),
         typeof(PluginManifest),
+        typeof(ILogger),
+        typeof(ILoggerFactory),
+        typeof(IConfiguration),
         .. sharedSources.SelectMany(source => source.GetExportedTypes()),
     ];
 

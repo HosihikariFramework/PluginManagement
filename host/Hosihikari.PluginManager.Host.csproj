@@ -9,6 +9,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- 日志的落地端由宿主决定（ADR-0007）；核心只依赖 Logging 抽象。 -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
     <ProjectReference Include="../src/Hosihikari.PluginManager.csproj" />
     <!-- 载体绑定的替身，住共享层（ADR-0019 / ADR-0021）。 -->
     <ProjectReference Include="../test/Bindings.Stub/Bindings.Stub.csproj" />

@@ -4,6 +4,8 @@ using Hosihikari;
 using Hosihikari.Bindings;
 using Hosihikari.PluginManagement;
 using Hosihikari.PluginManagement.Spike;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 // 载体中立检查（ADR-0015）：普通 .NET 控制台主机驱动核心，不碰 BDS、Shim、任何载体。
 var repoRoot = RepoRoot();
@@ -15,19 +17,29 @@ if (Directory.Exists(stage))
 
 var pluginsRoot = Path.Combine(stage, "plugins");
 var dataRoot = Path.Combine(stage, "data");
-Stage("Foo", []);
-Stage("Bar", ["Foo"]);
+var configRoot = Path.Combine(stage, "config", "hosihikari");
+Stage("Foo", [], withConfig: true);
+Stage("Bar", ["Foo"], withConfig: false);
 StageBroken();
 StageScript();
 
-// 载体对象经服务解析交给插件，取用是自愿的逃生舱（ADR-0007 / ADR-0019）。
-var services = new SimpleServices();
-services.Add(typeof(ICarrierInfo), new StubCarrier("stub"));
+// 宿主服务用现成的包拼装（ADR-0007）：DI + 日志。载体对象经服务解析交给插件（ADR-0019）。
+var collection = new ServiceCollection();
+collection.AddLogging(builder => builder
+    .AddSimpleConsole(options => options.SingleLine = true)
+    .SetMinimumLevel(LogLevel.Information));
+collection.AddSingleton(typeof(ICarrierInfo), new StubCarrier("stub"));
+var services = collection.BuildServiceProvider();
+
+// 运营方的覆盖放到包外（ADR-0018）。
+Directory.CreateDirectory(configRoot);
+File.WriteAllText(Path.Combine(configRoot, "Foo.conf"), "greeting = \"overridden\"\n");
 
 var reported = new List<string>();
 var host = new PluginManagerHost(
     pluginsRoot,
     dataRoot,
+    configRoot,
     entry =>
     {
         reported.Add(entry);
@@ -41,7 +53,20 @@ Console.WriteLine("=== 加载 ===");
 host.LoadAll();
 Console.WriteLine($"已加载：{string.Join(", ", host.LoadedNames)}");
 
+// 事件与调度是异步生效的，等一小会儿再看结果。
+host.Events.Publish("ping");
+Thread.Sleep(300);
+
 var checks = new List<(string Name, bool Passed, string Detail)>();
+
+// A9：一个 handler 抛出，其余照常收到（ADR-0014）
+var heardFile = Path.Combine(dataRoot, "Foo", "heard.txt");
+var heard = File.Exists(heardFile) ? File.ReadAllText(heardFile) : "（没收到）";
+checks.Add(("A9 handler 抛出不影响其余 handler", heard == "ping", heard));
+
+// A10：调度器的一次性任务真的跑了（ADR-0007）
+var scheduledFile = Path.Combine(dataRoot, "Foo", "scheduled.txt");
+checks.Add(("A10 调度器的一次性任务执行", File.Exists(scheduledFile), File.Exists(scheduledFile) ? "已执行" : "没跑"));
 
 // A6：api 不匹配必须被拒载并留下可读报告（ADR-0012）
 var rejected = !host.LoadedNames.Contains("Broken") && reported.Any(entry => entry.Contains("api 不匹配"));
@@ -51,6 +76,11 @@ checks.Add(("A6 api 不匹配时拒载", rejected, reported.LastOrDefault(entry 
 var carrierFile = Path.Combine(dataRoot, "Foo", "carrier.txt");
 var seen = File.Exists(carrierFile) ? File.ReadAllText(carrierFile) : "（插件没写出东西）";
 checks.Add(("A5 载体绑定也走共享层", seen == "stub-carrier:stub", seen));
+
+// A8：包内默认被包外覆盖，且没写配置的插件照样加载（ADR-0018）
+var greetingFile = Path.Combine(dataRoot, "Foo", "greeting.txt");
+var greeting = File.Exists(greetingFile) ? File.ReadAllText(greetingFile) : "（插件没写出东西）";
+checks.Add(("A8 配置分层：包外覆盖包内", greeting == "overridden" && host.LoadedNames.Contains("Bar"), greeting));
 
 // A7：另一种插件类型（不碰 ALC）走的是同一套契约与同一套生命周期（ADR-0002 / ADR-0010）
 var ranFile = Path.Combine(dataRoot, "Lua", "ran.txt");
@@ -64,9 +94,13 @@ checks.Add(("A4 有依赖者时拒绝卸载", !refused.Released && !string.IsNul
 var collectible = CollectibleContextCount();
 checks.Add(("A1 每插件一个 collectible ALC", collectible >= 2, $"进程内 collectible ALC 数 = {collectible}"));
 
-// A2：插件包内不得有共享层副本 —— 这是会静默失败的那条规则（ADR-0004 / ADR-0019）
+// A2：插件包内不得有共享层副本 —— 这是会静默失败的那条规则（ADR-0004 / ADR-0007 / ADR-0019）
 var copies = Directory.EnumerateFiles(pluginsRoot, "*.dll", SearchOption.AllDirectories)
-    .Where(file => Path.GetFileName(file) is "Hosihikari.Abstractions.dll" or "Hosihikari.Bindings.Stub.dll")
+    .Where(file => Path.GetFileName(file) is
+        "Hosihikari.Abstractions.dll" or
+        "Hosihikari.Bindings.Stub.dll" or
+        "Microsoft.Extensions.Logging.Abstractions.dll" or
+        "Microsoft.Extensions.Configuration.Abstractions.dll")
     .ToArray();
 checks.Add(("A2 插件包内无共享层副本", copies.Length == 0, copies.Length == 0 ? "无副本" : string.Join(", ", copies)));
 
@@ -97,7 +131,7 @@ foreach (var (name, passed, detail) in checks)
 
 return checks.All(check => check.Passed) ? 0 : 1;
 
-void Stage(string name, string[] dependencies)
+void Stage(string name, string[] dependencies, bool withConfig)
 {
     var package = Path.Combine(pluginsRoot, name);
     Directory.CreateDirectory(package);
@@ -106,6 +140,12 @@ void Stage(string name, string[] dependencies)
     foreach (var file in Directory.EnumerateFiles(OutputDirectory(name), "*", SearchOption.TopDirectoryOnly))
     {
         File.Copy(file, Path.Combine(package, Path.GetFileName(file)), overwrite: true);
+    }
+
+    if (withConfig)
+    {
+        // 作者给的默认值，随包更新（ADR-0018）。
+        File.WriteAllText(Path.Combine(package, $"{name}.conf"), "greeting = \"default\"\n");
     }
 
     var deps = string.Join(", ", dependencies.Select(dependency => $$"""{ "name": "{{dependency}}" }"""));
@@ -198,13 +238,4 @@ static string RepoRoot()
     }
 
     return directory?.FullName ?? throw new InvalidOperationException("找不到仓库根");
-}
-
-internal sealed class SimpleServices : IServiceProvider
-{
-    private readonly Dictionary<Type, object> _map = [];
-
-    public void Add(Type type, object instance) => _map[type] = instance;
-
-    public object? GetService(Type serviceType) => _map.GetValueOrDefault(serviceType);
 }
