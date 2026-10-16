@@ -3,6 +3,7 @@ using System.Runtime.Loader;
 using Hosihikari;
 using Hosihikari.Bindings;
 using Hosihikari.PluginManagement;
+using Hosihikari.PluginManagement.Pack;
 using Hosihikari.PluginManagement.Spike;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -18,8 +19,10 @@ if (Directory.Exists(stage))
 var pluginsRoot = Path.Combine(stage, "plugins");
 var dataRoot = Path.Combine(stage, "data");
 var configRoot = Path.Combine(stage, "config", "hosihikari");
-Stage("Foo", [], withConfig: true);
-Stage("Bar", ["Foo"], withConfig: false);
+var reported = new List<string>();
+
+Stage("Foo", withConfig: true);
+Stage("Bar", withConfig: false);
 StageBroken();
 StageScript();
 
@@ -35,7 +38,6 @@ var services = collection.BuildServiceProvider();
 Directory.CreateDirectory(configRoot);
 File.WriteAllText(Path.Combine(configRoot, "Foo.conf"), "greeting = \"overridden\"\n");
 
-var reported = new List<string>();
 var host = new PluginManagerHost(
     pluginsRoot,
     dataRoot,
@@ -67,6 +69,21 @@ checks.Add(("A9 handler 抛出不影响其余 handler", heard == "ping", heard))
 // A10：调度器的一次性任务真的跑了（ADR-0007）
 var scheduledFile = Path.Combine(dataRoot, "Foo", "scheduled.txt");
 checks.Add(("A10 调度器的一次性任务执行", File.Exists(scheduledFile), File.Exists(scheduledFile) ? "已执行" : "没跑"));
+
+// A11：两个测试插件都经打包工具装配成了包
+var packedOk = Directory.Exists(Path.Combine(pluginsRoot, "Foo")) && Directory.Exists(Path.Combine(pluginsRoot, "Bar"));
+checks.Add(("A11 打包工具产出包", packedOk, packedOk ? "Foo / Bar" : "缺包"));
+
+// A12：误把契约打进包里的构建输出，打包必须拦下（ADR-0004 / 0019）—— 这条在运行期是静默的
+var badSource = Path.Combine(stage, "bad-source");
+Directory.CreateDirectory(badSource);
+File.Copy(
+    Path.Combine(AppContext.BaseDirectory, "Hosihikari.Abstractions.dll"),
+    Path.Combine(badSource, "Hosihikari.Abstractions.dll"),
+    overwrite: true);
+var bad = Packager.Pack(badSource, Path.Combine(repoRoot, "test", "Foo", "manifest.json"), Path.Combine(stage, "bad-out"));
+var sharedProblem = bad.Problems.FirstOrDefault(problem => problem.Contains("共享层"));
+checks.Add(("A12 打包拒绝共享层副本", !bad.Succeeded && sharedProblem is not null, sharedProblem ?? "（未拦下）"));
 
 // A6：api 不匹配必须被拒载并留下可读报告（ADR-0012）
 var rejected = !host.LoadedNames.Contains("Broken") && reported.Any(entry => entry.Contains("api 不匹配"));
@@ -131,37 +148,22 @@ foreach (var (name, passed, detail) in checks)
 
 return checks.All(check => check.Passed) ? 0 : 1;
 
-void Stage(string name, string[] dependencies, bool withConfig)
+// 测试插件走打包工具 —— 它们就是它的前两个用户，包因此与作者拿到的是同一种东西。
+void Stage(string name, bool withConfig)
 {
-    var package = Path.Combine(pluginsRoot, name);
-    Directory.CreateDirectory(package);
-
-    // 整份构建输出进包，与真实插件包的形态一致 —— 共享层副本会不会混进来，由构建规则决定。
-    foreach (var file in Directory.EnumerateFiles(OutputDirectory(name), "*", SearchOption.TopDirectoryOnly))
+    var manifestPath = Path.Combine(repoRoot, "test", name, "manifest.json");
+    var packed = Packager.Pack(OutputDirectory(name), manifestPath, pluginsRoot);
+    if (!packed.Succeeded)
     {
-        File.Copy(file, Path.Combine(package, Path.GetFileName(file)), overwrite: true);
+        reported.Add($"{name}: 打包失败 —— {string.Join("；", packed.Problems)}");
+        return;
     }
 
     if (withConfig)
     {
         // 作者给的默认值，随包更新（ADR-0018）。
-        File.WriteAllText(Path.Combine(package, $"{name}.conf"), "greeting = \"default\"\n");
+        File.WriteAllText(Path.Combine(packed.PackageDirectory!, $"{name}.conf"), "greeting = \"default\"\n");
     }
-
-    var deps = string.Join(", ", dependencies.Select(dependency => $$"""{ "name": "{{dependency}}" }"""));
-    File.WriteAllText(Path.Combine(package, "manifest.json"), $$"""
-        {
-          "name": "{{name}}",
-          "entry": "{{name}}.dll",
-          "type": "assembly",
-          "version": "1.0.0",
-          "dependencies": [{{deps}}],
-          "extraInfo": {
-            "api": "{{PluginContract.ApiVersion}}",
-            "format_version": "1"
-          }
-        }
-        """);
 }
 
 // 清单合法但没有能兑现的 api —— 测拒载路径（ADR-0012）。入口文件故意不存在：拒载要发生在载入之前。

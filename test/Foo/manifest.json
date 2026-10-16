@@ -1,0 +1,11 @@
+{
+  "name": "Foo",
+  "entry": "Foo.dll",
+  "type": "assembly",
+  "version": "1.0.0",
+  "dependencies": [],
+  "extraInfo": {
+    "api": "1",
+    "format_version": "1"
+  }
+}
