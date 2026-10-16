@@ -23,7 +23,7 @@ public sealed class AssemblyPluginProvider(params Assembly[] sharedSources) : IP
 
     public string Type => "assembly";
 
-    public bool CanLoad(PluginManifest manifest) => manifest.Type == Type;
+    public bool CanLoad(PluginManifest manifest) => manifest.Provider == Type;
 
     public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context)
     {

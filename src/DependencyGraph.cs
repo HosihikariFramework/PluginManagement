@@ -43,6 +43,13 @@ internal static class DependencyGraph
         state[name] = 1;
         foreach (var dependency in package.Manifest.Dependencies)
         {
+            // 对框架自身的依赖在哪个拓扑下都成立 —— 我们就是正在跑的那个（ADR-0006）。
+            // 父级态下这条依赖是给父级的计划用的，自持态下没有这个包，但它同样已经在了。
+            if (dependency.Name == PluginContract.ShimModName)
+            {
+                continue;
+            }
+
             if (!byName.TryGetValue(dependency.Name, out var target))
             {
                 report($"{name}: 依赖 {dependency.Name} 不存在");

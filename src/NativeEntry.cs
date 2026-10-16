@@ -14,14 +14,86 @@ public static class NativeEntry
     private static ILoggerFactory? s_loggerFactory;
 
     /// <summary>
-    /// 启动核心并把插件装起来。返回 0 表示成功，非 0 是错误码。
+    /// 自持态入口：插件包就在 <c>plugins/</c> 下，由我们枚举装载（ADR-0018）。
     ///
     /// **不抛异常**：在别人的进程里，托管异常越过这条边界等于把宿主一起拖下水（ADR-0009）。
     /// </summary>
     /// <param name="arg">扩展位，当前未用。</param>
     /// <param name="argSizeInBytes">上面那块的大小，当前未用。</param>
     [UnmanagedCallersOnly]
-    public static int Start(IntPtr arg, int argSizeInBytes)
+    public static int Start(IntPtr arg, int argSizeInBytes) => StartCore(scanPlugins: true);
+
+    /// <summary>
+    /// 父级态入口：插件集归父级注册表所有（ADR-0003），我们等父级把插件交过来。
+    /// 枚举 <c>plugins/</c> 会把父级自己的模组一并收编，所以这里不扫目录。
+    /// </summary>
+    /// <param name="arg">扩展位，当前未用。</param>
+    /// <param name="argSizeInBytes">上面那块的大小，当前未用。</param>
+    [UnmanagedCallersOnly]
+    public static int StartUnderParent(IntPtr arg, int argSizeInBytes) => StartCore(scanPlugins: false);
+
+    /// <summary>
+    /// 父级交付一个插件包：参数是包目录的、以 null 结尾的 UTF-8 指针（ADR-0003）。
+    /// 返回 0 表示装上了，非 0 表示没装上 —— 原因已经进了父级的日志。
+    /// </summary>
+    /// <param name="arg">包目录的 UTF-8 指针。</param>
+    /// <param name="argSizeInBytes">那块缓冲的字节数，含结尾的 null。</param>
+    [UnmanagedCallersOnly]
+    public static int LoadPlugin(IntPtr arg, int argSizeInBytes) => Deliver(arg, load: true);
+
+    /// <summary>
+    /// 父级收回一个插件：参数是插件名的、以 null 结尾的 UTF-8 指针（ADR-0003）。
+    /// 返回 0 表示回收验证过了；非 0 表示放下了但还没回收，父级可以再问一次。
+    /// </summary>
+    /// <param name="arg">插件名的 UTF-8 指针。</param>
+    /// <param name="argSizeInBytes">那块缓冲的字节数，含结尾的 null。</param>
+    [UnmanagedCallersOnly]
+    public static int UnloadPlugin(IntPtr arg, int argSizeInBytes) => Deliver(arg, load: false);
+
+    private static int Deliver(IntPtr arg, bool load)
+    {
+        var logger = s_loggerFactory?.CreateLogger("Hosihikari");
+
+        // 整段包在 try 里：这是托管与父级之间唯一的一道缝，异常越过它等于把服务端一起拖下水
+        // （ADR-0009）。一次交付失败只是这个插件没装上，父级照常跑。
+        try
+        {
+            // UTF-8 而不是 UTF-16：原生侧的名字与路径本来就是 UTF-8，跨平台也是同一个字节形状。
+            var text = arg == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(arg);
+            if (string.IsNullOrEmpty(text))
+            {
+                logger?.LogError("父级交来的参数是空的");
+                return 1;
+            }
+
+            if (s_host is null)
+            {
+                logger?.LogError("核心还没起来，{Action} {Name} 落空", load ? "装载" : "卸载", text);
+                return 1;
+            }
+
+            if (load)
+            {
+                // 失败原因由核心自己报过（它会走 _report）。
+                return s_host.Load(text) ? 0 : 1;
+            }
+
+            var result = s_host.Unload(text);
+            if (!result.Released)
+            {
+                logger?.LogError("卸载 {Name} 没完成：{Reason}", text, result.Error);
+            }
+
+            return result.Released ? 0 : 1;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "{Action} 时抛出，本次交付作废", load ? "装载" : "卸载");
+            return 1;
+        }
+    }
+
+    private static int StartCore(bool scanPlugins)
     {
         s_loggerFactory = LoggerFactory.Create(builder => builder
             .AddSimpleConsole(options => options.SingleLine = true)
@@ -30,7 +102,7 @@ public static class NativeEntry
 
         try
         {
-            // 服务端根就是进程的工作目录；插件、配置与数据都相对它找（ADR-0018）。
+            // 服务端根就是进程的工作目录；配置与数据都相对它找（ADR-0018）。
             var root = Directory.GetCurrentDirectory();
             s_host = new PluginManagerHost(
                 Path.Combine(root, "plugins"),
@@ -39,11 +111,19 @@ public static class NativeEntry
                 entry => logger.LogError("加载问题：{Entry}", entry));
             s_host.AddProvider(new AssemblyPluginProvider());
 
-            s_host.LoadAll();
-            logger.LogInformation(
-                "已加载 {Count} 个插件：[{Names}]",
-                s_host.LoadedNames.Count,
-                string.Join(", ", s_host.LoadedNames));
+            if (scanPlugins)
+            {
+                s_host.LoadAll();
+                logger.LogInformation(
+                    "已加载 {Count} 个插件：[{Names}]",
+                    s_host.LoadedNames.Count,
+                    string.Join(", ", s_host.LoadedNames));
+            }
+            else
+            {
+                logger.LogInformation("已就绪，等待父级交付插件");
+            }
+
             return 0;
         }
         catch (Exception ex)

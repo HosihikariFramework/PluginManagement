@@ -17,7 +17,7 @@ public sealed class PluginManagerHost
     private readonly ILoggerFactory _loggerFactory;
     private readonly IEventBus _events;
     private readonly IScheduler _scheduler;
-    private readonly Dictionary<string, LoadedPlugin> _plugins = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Slot> _slots = new(StringComparer.Ordinal);
     private readonly List<IPluginProvider> _providers = [];
 
     public PluginManagerHost(
@@ -36,80 +36,133 @@ public sealed class PluginManagerHost
                          ?? NullLoggerFactory.Instance;
         _events = new EventBus(_loggerFactory.CreateLogger("Hosihikari.Events"));
         _scheduler = new Scheduler(_loggerFactory.CreateLogger("Hosihikari.Scheduler"));
+
+        // 两个根先建出来：父级态下不会走 LoadAll，而插件写数据、运营方放覆盖都指望它们在。
+        Directory.CreateDirectory(_dataRoot);
+        Directory.CreateDirectory(_configRoot);
     }
 
     public void AddProvider(IPluginProvider provider) => _providers.Add(provider);
 
-    public IReadOnlyCollection<string> LoadedNames => _plugins.Keys;
+    /// <summary>在场的插件名。已经放下、只等回收的那些不算（见 <see cref="PluginState"/>）。</summary>
+    public IReadOnlyCollection<string> LoadedNames =>
+        _slots.Where(slot => slot.Value.State == PluginState.Loaded).Select(slot => slot.Key).ToArray();
 
     /// <summary>载体适配器要把载体事件并进来，所以事件总线得对外可达（ADR-0007）。</summary>
     public IEventBus Events => _events;
 
+    /// <summary>自持态：插件包就在 <c>plugins/</c> 下，由我们枚举、按依赖排序后逐个装（ADR-0018）。</summary>
     public void LoadAll()
     {
-        Directory.CreateDirectory(_dataRoot);
-        Directory.CreateDirectory(_configRoot);
-
         foreach (var package in DependencyGraph.Resolve(ManifestReader.Scan(_pluginsRoot, _report), _report))
         {
             LoadOne(package);
         }
     }
 
-    /// <summary>卸载。有依赖者时**拒绝**并如实返回，不自动级联（ADR-0004）。</summary>
+    /// <summary>
+    /// 父级态：父级把包逐个交过来（ADR-0003）。顺序与依赖由父级的计划保证，我们只管装。
+    /// 返回它有没有装上 —— 失败原因已经进了日志。
+    /// </summary>
+    public bool Load(string packageDirectory)
+    {
+        if (ManifestReader.Read(packageDirectory, _report) is not { } package)
+        {
+            return false;
+        }
+
+        if (_slots.TryGetValue(package.Manifest.Name, out var slot))
+        {
+            _report($"{package.Manifest.Name}: 已经在册（{slot.State}）");
+            return false;
+        }
+
+        return LoadOne(package);
+    }
+
+    /// <summary>
+    /// 卸载。有依赖者时**拒绝**并如实返回，不自动级联（ADR-0004）。
+    ///
+    /// 卸载分两段：先把实例与作用域放下，再等 ALC 被回收。第二段没通过时状态停在
+    /// <see cref="PluginState.Detached"/> 并如实回报失败 —— 再问一次就是再验一次
+    /// （钉住 ALC 的东西可能是暂时的，重试真的可能通过）。
+    /// </summary>
     public UnloadResult Unload(string name)
     {
-        if (!_plugins.ContainsKey(name))
+        if (!_slots.TryGetValue(name, out var slot))
         {
             return UnloadResult.Failed($"{name} 未加载");
         }
 
-        var dependents = _plugins.Values
-            .Where(p => p.Manifest.Dependencies.Any(d => d.Name == name))
-            .Select(p => p.Manifest.Name)
-            .ToArray();
-        if (dependents.Length > 0)
+        if (slot.State == PluginState.Loaded)
         {
-            return UnloadResult.Failed($"仍有依赖者：{string.Join(", ", dependents)}");
+            var dependents = _slots.Values
+                .Where(loaded => loaded.State == PluginState.Loaded)
+                .Where(p => p.Manifest.Dependencies.Any(d => d.Name == name))
+                .Select(p => p.Manifest.Name)
+                .ToArray();
+            if (dependents.Length > 0)
+            {
+                return UnloadResult.Failed($"仍有依赖者：{string.Join(", ", dependents)}");
+            }
+
+            Detach(slot);
         }
 
-        var verify = Detach(name);
+        // 到这里 slot 里已经没有指向实例与 ALC 的字段了，可以验回收。
+        if (!Collected(slot.Verify!))
+        {
+            // 说"回收"而不是"ALC"：释放句柄长什么样是 Provider 自己的事（ADR-0010）。
+            return UnloadResult.Failed($"{name} 已经放下，但回收验证没通过 —— 再卸载一次会重新验证");
+        }
 
+        _slots.Remove(name);
+        return UnloadResult.Ok();
+    }
+
+    /// <summary>
+    /// 停用、卸载、放下实例与作用域，只留下验证器。单独一个不内联的方法，是为了让本方法返回后，
+    /// 实例与它的 ALC 在栈上再无强引用 —— 回收验证的前提（ADR-0023）。
+    /// 状态与字段一起改完：表里留着实例等于把 ALC 钉死。
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void Detach(Slot slot)
+    {
+        var instance = slot.Instance!;
+        var scope = slot.Scope!;
+
+        try
+        {
+            instance.Plugin.OnDisable();
+            instance.Plugin.OnUnload();
+        }
+        catch (Exception ex)
+        {
+            _report($"{slot.Manifest.Name}: 停用钩子抛出 —— {ex.Message}");
+        }
+
+        // 作者没退订的订阅、没释放的定时器，在这里一并收回 —— 否则它们把 ALC 钉在共享服务上。
+        scope.ReleaseAll();
+
+        var verify = instance.Release();
+
+        slot.Verify = verify;
+        slot.Instance = null;
+        slot.Scope = null;
+        slot.State = PluginState.Detached;
+    }
+
+    /// <summary>回收验证：只攥着验证器，它内部是一个 WeakReference。</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool Collected(Func<bool> verify)
+    {
         for (var i = 0; i < 100 && !verify(); i++)
         {
             GC.Collect();
             GC.WaitForPendingFinalizers();
         }
 
-        return verify()
-            ? UnloadResult.Ok()
-            : UnloadResult.Failed($"{name} 的卸载句柄已释放，但回收未验证通过");
-    }
-
-    /// <summary>
-    /// 停用、卸载、拿走验证器。单独一个不内联的方法，是为了让本方法返回后，
-    /// 实例与它的 ALC 在栈上再无强引用 —— 回收验证的前提（ADR-0023）。
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private Func<bool> Detach(string name)
-    {
-        var entry = _plugins[name];
-        _plugins.Remove(name);
-
-        try
-        {
-            entry.Instance.Plugin.OnDisable();
-            entry.Instance.Plugin.OnUnload();
-        }
-        catch (Exception ex)
-        {
-            _report($"{name}: 停用钩子抛出 —— {ex.Message}");
-        }
-
-        // 作者没退订的订阅、没释放的定时器，在这里一并收回 —— 否则它们把 ALC 钉在共享服务上。
-        entry.Scope.ReleaseAll();
-
-        return entry.Instance.Release();
+        return verify();
     }
 
     /// <summary>
@@ -124,14 +177,14 @@ public sealed class PluginManagerHost
             .AddEnvironmentVariables()
             .Build();
 
-    private void LoadOne(PluginPackage package)
+    private bool LoadOne(PluginPackage package)
     {
         var manifest = package.Manifest;
         var provider = _providers.FirstOrDefault(p => p.CanLoad(manifest));
         if (provider is null)
         {
-            _report($"{manifest.Name}: 没有能处理 type={manifest.Type} 的 Provider");
-            return;
+            _report($"{manifest.Name}: 没有能处理 provider={manifest.Provider} 的 Provider");
+            return false;
         }
 
         var dataDirectory = Path.Combine(_dataRoot, manifest.Name);
@@ -156,13 +209,13 @@ public sealed class PluginManagerHost
         {
             // 带完整异常：在别人的进程里没有调试器，消息本身就是唯一的线索（ADR-0009 的可见通道）。
             _report($"{manifest.Name}: 加载抛出 —— {ex}");
-            return;
+            return false;
         }
 
         if (instance is null)
         {
             _report($"{manifest.Name}: 加载失败");
-            return;
+            return false;
         }
 
         try
@@ -174,13 +227,41 @@ public sealed class PluginManagerHost
         {
             _report($"{manifest.Name}: 钩子抛出，已退回 —— {ex.Message}");
             instance.Release();
-            return;
+            return false;
         }
 
-        _plugins[manifest.Name] = new LoadedPlugin(manifest, instance, scope);
+        _slots[manifest.Name] = new Slot(manifest) { Instance = instance, Scope = scope };
+        return true;
     }
 
-    private sealed record LoadedPlugin(PluginManifest Manifest, PluginInstance Instance, PluginScope Scope);
+    /// <summary>
+    /// 表里的一格。两段式卸载要求它在状态切换时把指向实例与 ALC 的字段一并清掉（ADR-0023）——
+    /// 所以这里放的是可空字段而不是 record。
+    /// </summary>
+    private sealed class Slot(PluginManifest manifest)
+    {
+        public PluginManifest Manifest { get; } = manifest;
+
+        public PluginState State { get; set; } = PluginState.Loaded;
+
+        /// <summary>只在 <see cref="PluginState.Loaded"/> 时在场。</summary>
+        public PluginInstance? Instance { get; set; }
+
+        public PluginScope? Scope { get; set; }
+
+        /// <summary>只在 <see cref="PluginState.Detached"/> 时在场。它只攥着一个 WeakReference，不钉住 ALC。</summary>
+        public Func<bool>? Verify { get; set; }
+    }
+}
+
+/// <summary>插件在框架里的状态。</summary>
+internal enum PluginState
+{
+    /// <summary>在场：实例已建、钩子已挂，事件订阅与定时器归它的作用域管。</summary>
+    Loaded,
+
+    /// <summary>已放下：实例与作用域都放开了，只等 ALC 被真正回收。回收没通过前它仍占着内存（ADR-0004）。</summary>
+    Detached,
 }
 
 internal sealed class PluginContext(

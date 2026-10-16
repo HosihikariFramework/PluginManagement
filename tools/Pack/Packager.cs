@@ -50,6 +50,13 @@ public static class Packager
             problems.Add($"清单 api 是 {manifest.Api ?? "未声明"}，当前契约是 {PluginContract.ApiVersion}");
         }
 
+        // type 是父级的路由键（ADR-0006）。写错的包在父级态下根本到不了我们手里，
+        // 而且失败点离病因很远 —— 所以在这里就拦下。
+        if (manifest.Type != PluginContract.ShimModName)
+        {
+            problems.Add($"清单 type 必须是 {PluginContract.ShimModName}，实际 {(string.IsNullOrWhiteSpace(manifest.Type) ? "未声明" : manifest.Type)}");
+        }
+
         // 共享层副本（ADR-0004 / 0019）—— 这条是静默失败的那条，所以放在打包期拦。
         var offenders = Directory
             .EnumerateFiles(sourceDirectory, "*.dll", SearchOption.TopDirectoryOnly)
@@ -64,7 +71,7 @@ public static class Packager
         }
 
         // 入口（ADR-0008）。编译器已经保证它与 IPlugin 和有无参构造是一致的，这里只确认它存在。
-        if (manifest.Type == "assembly")
+        if (manifest.Provider == "assembly")
         {
             var entryPath = Path.Combine(sourceDirectory, manifest.Entry);
             if (!File.Exists(entryPath))

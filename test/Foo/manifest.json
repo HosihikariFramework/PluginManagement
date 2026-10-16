@@ -1,9 +1,11 @@
 {
   "name": "Foo",
   "entry": "Foo.dll",
-  "type": "assembly",
+  "type": "hosihikari",
   "version": "1.0.0",
-  "dependencies": [],
+  "dependencies": [
+    { "name": "hosihikari" }
+  ],
   "extraInfo": {
     "api": "1",
     "format_version": "1"

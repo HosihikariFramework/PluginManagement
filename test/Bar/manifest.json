@@ -1,10 +1,11 @@
 {
   "name": "Bar",
   "entry": "Bar.dll",
-  "type": "assembly",
+  "type": "hosihikari",
   "version": "1.0.0",
   "dependencies": [
-    { "name": "Foo" }
+    { "name": "Foo" },
+    { "name": "hosihikari" }
   ],
   "extraInfo": {
     "api": "1",

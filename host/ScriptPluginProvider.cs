@@ -10,7 +10,7 @@ public sealed class ScriptPluginProvider : IPluginProvider
 {
     public string Type => "script";
 
-    public bool CanLoad(PluginManifest manifest) => manifest.Type == Type;
+    public bool CanLoad(PluginManifest manifest) => manifest.Provider == Type;
 
     public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context)
     {

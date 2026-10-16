@@ -25,6 +25,7 @@ Stage("Foo", withConfig: true);
 Stage("Bar", withConfig: false);
 StageBroken();
 StageScript();
+StagePinned();
 
 // 宿主服务用现成的包拼装（ADR-0007）：DI + 日志。载体对象经服务解析交给插件（ADR-0019）。
 var collection = new ServiceCollection();
@@ -48,8 +49,10 @@ var host = new PluginManagerHost(
         Console.WriteLine($"[框架] {entry}");
     },
     services);
+var pinnedProvider = new PinnedPluginProvider();
 host.AddProvider(new AssemblyPluginProvider(typeof(StubCarrier).Assembly));
 host.AddProvider(new ScriptPluginProvider());
+host.AddProvider(pinnedProvider);
 
 Console.WriteLine("=== 加载 ===");
 host.LoadAll();
@@ -106,6 +109,31 @@ checks.Add(("A7 非 ALC 的插件类型走同一契约", File.Exists(ranFile), F
 // A4：Bar 依赖 Foo，此时卸 Foo 必须被拒，且如实返回（ADR-0004）
 var refused = host.Unload("Foo");
 checks.Add(("A4 有依赖者时拒绝卸载", !refused.Released && !string.IsNullOrEmpty(refused.Error), refused.Error ?? "（未拒绝）"));
+
+// A13：父级态下父级把包逐个交过来（ADR-0003）—— 这个包不在 plugins/ 下，只有交付能让它进来
+var delivered = host.Load(Path.Combine(stage, "parented", "Pinned"));
+checks.Add((
+    "A13 父级交付的包装上了",
+    delivered && host.LoadedNames.Contains("Pinned"),
+    delivered ? string.Join(", ", host.LoadedNames) : "交付被拒"
+));
+
+// A14：放下之后回收验证没过，就是没卸掉 —— 照实报失败（ADR-0004）
+var pinnedFirst = host.Unload("Pinned");
+checks.Add((
+    "A14 回收没过时如实报失败",
+    !pinnedFirst.Released && pinnedFirst.Error?.Contains("回收") == true,
+    pinnedFirst.Error ?? "（居然说卸掉了）"
+));
+
+// A15：再问一次是重新验证，不是"未加载"；外面那根没了就真卸掉
+pinnedProvider.Pinned = false;
+var pinnedSecond = host.Unload("Pinned");
+checks.Add((
+    "A15 待回收的插件可以再卸一次",
+    pinnedSecond.Released && !host.LoadedNames.Contains("Pinned"),
+    pinnedSecond.Error ?? "已回收"
+));
 
 // A1：每个插件一个 collectible ALC（ADR-0004）
 var collectible = CollectibleContextCount();
@@ -175,7 +203,7 @@ void StageBroken()
         {
           "name": "Broken",
           "entry": "Broken.dll",
-          "type": "assembly",
+          "type": "hosihikari",
           "extraInfo": { "api": "999", "format_version": "1" }
         }
         """);
@@ -191,8 +219,23 @@ void StageScript()
         {
           "name": "Lua",
           "entry": "main.lua",
-          "type": "script",
-          "extraInfo": { "api": "1", "format_version": "1" }
+          "type": "hosihikari",
+          "extraInfo": { "api": "1", "format_version": "1", "provider": "script" }
+        }
+        """);
+}
+
+// 父级态的那个包：故意放在 plugins/ **外面** —— 只有父级交付能让它进来（ADR-0003）。
+void StagePinned()
+{
+    var package = Path.Combine(stage, "parented", "Pinned");
+    Directory.CreateDirectory(package);
+    File.WriteAllText(Path.Combine(package, "manifest.json"), """
+        {
+          "name": "Pinned",
+          "entry": "Pinned.dll",
+          "type": "hosihikari",
+          "extraInfo": { "api": "1", "format_version": "1", "provider": "pinned" }
         }
         """);
 }
