@@ -8,13 +8,19 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Private=false + ExcludeAssets=runtime：契约与载体绑定都驻留共享层，插件不得自带副本（ADR-0004 / ADR-0019）。 -->
+    <ProjectReference Include="../Bindings.Stub/Bindings.Stub.csproj" Private="false" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <!-- Private=false / ExcludeAssets=runtime：契约与载体绑定都驻留共享层，插件不得自带副本
+       （ADR-0004 / ADR-0019）。两种拿法都要带上这两条。 -->
+  <ItemGroup Condition="Exists('../../../Hosihikari.Abstractions/src/Hosihikari.Abstractions.csproj')">
     <ProjectReference Include="../../../Hosihikari.Abstractions/src/Hosihikari.Abstractions.csproj"
                       Private="false"
                       ExcludeAssets="runtime" />
-    <ProjectReference Include="../Bindings.Stub/Bindings.Stub.csproj"
-                      Private="false"
-                      ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup Condition="!Exists('../../../Hosihikari.Abstractions/src/Hosihikari.Abstractions.csproj')">
+    <PackageReference Include="Hosihikari.Abstractions" Version="[0.1.0]" ExcludeAssets="runtime" />
   </ItemGroup>
 
 </Project>

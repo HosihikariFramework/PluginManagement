@@ -9,13 +9,22 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../Hosihikari.Abstractions/src/Hosihikari.Abstractions.csproj" />
     <PackageReference Include="Hocon.Extensions.Configuration" Version="2.0.4" />
     <PackageReference Include="McMaster.NETCore.Plugins" Version="2.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.13" />
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.13" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.13" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.13" />
+  </ItemGroup>
+
+  <!-- 契约来自另一个仓，两种拿法二选一：并列摆放时直接编在一起（改契约不用重新打包），
+       否则走包 —— 单独 clone 与 CI 走这条，插件作者也只有这一条。 -->
+  <ItemGroup Condition="Exists('../../Hosihikari.Abstractions/src/Hosihikari.Abstractions.csproj')">
+    <ProjectReference Include="../../Hosihikari.Abstractions/src/Hosihikari.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="!Exists('../../Hosihikari.Abstractions/src/Hosihikari.Abstractions.csproj')">
+    <PackageReference Include="Hosihikari.Abstractions" Version="[0.1.0]" />
   </ItemGroup>
 
 </Project>

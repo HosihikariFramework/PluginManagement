@@ -7,10 +7,14 @@
     <AssemblyName>Bar</AssemblyName>
   </PropertyGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="Exists('../../../Hosihikari.Abstractions/src/Hosihikari.Abstractions.csproj')">
     <ProjectReference Include="../../../Hosihikari.Abstractions/src/Hosihikari.Abstractions.csproj"
                       Private="false"
                       ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup Condition="!Exists('../../../Hosihikari.Abstractions/src/Hosihikari.Abstractions.csproj')">
+    <PackageReference Include="Hosihikari.Abstractions" Version="[0.1.0]" ExcludeAssets="runtime" />
   </ItemGroup>
 
 </Project>
