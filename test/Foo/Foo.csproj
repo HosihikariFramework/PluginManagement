@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Foo</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Private=false + ExcludeAssets=runtime：契约与载体绑定都驻留共享层，插件不得自带副本（ADR-0004 / ADR-0019）。 -->
+    <ProjectReference Include="../../../Hosihikari.Abstractions/src/Hosihikari.Abstractions.csproj"
+                      Private="false"
+                      ExcludeAssets="runtime" />
+    <ProjectReference Include="../Bindings.Stub/Bindings.Stub.csproj"
+                      Private="false"
+                      ExcludeAssets="runtime" />
+  </ItemGroup>
+
+</Project>
