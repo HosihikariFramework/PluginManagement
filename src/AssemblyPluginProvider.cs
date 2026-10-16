@@ -23,8 +23,7 @@ public sealed class AssemblyPluginProvider(params Assembly[] sharedSources) : IP
 
     public string Type => "assembly";
 
-    public bool CanLoad(PluginManifest manifest) =>
-        manifest.Type == Type && !string.IsNullOrWhiteSpace(manifest.EntryType);
+    public bool CanLoad(PluginManifest manifest) => manifest.Type == Type;
 
     public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context)
     {
@@ -37,15 +36,15 @@ public sealed class AssemblyPluginProvider(params Assembly[] sharedSources) : IP
             sharedTypes: _sharedTypes,
             configure: config => config.PreferSharedTypes = true);
 
+        // 入口由程序集上的特性声明 —— 怎么找到入口是本 Provider 的事（ADR-0008 / ADR-0010）。
         var assembly = loader.LoadDefaultAssembly();
-        var entryType = assembly.GetType(manifest.EntryType!, throwOnError: false);
-        if (entryType is null || Activator.CreateInstance(entryType) is not IPlugin plugin)
+        if (assembly.GetCustomAttribute<EntryPointAttributeBase>() is not { } entryPoint)
         {
             loader.Dispose();
             return null;
         }
 
-        return new AssemblyPluginInstance(plugin, loader);
+        return new AssemblyPluginInstance(entryPoint.CreateInstance(), loader);
     }
 }
 

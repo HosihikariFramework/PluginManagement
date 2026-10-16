@@ -2,6 +2,8 @@ using Hosihikari;
 using Hosihikari.Bindings;
 using Microsoft.Extensions.Logging;
 
+[assembly: EntryPoint<Foo.FooPlugin>]
+
 namespace Foo;
 
 public sealed class FooPlugin : IPlugin

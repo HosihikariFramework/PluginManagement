@@ -158,8 +158,7 @@ void Stage(string name, string[] dependencies, bool withConfig)
           "dependencies": [{{deps}}],
           "extraInfo": {
             "api": "{{PluginContract.ApiVersion}}",
-            "format_version": "1",
-            "entryType": "{{name}}.{{name}}Plugin"
+            "format_version": "1"
           }
         }
         """);
@@ -175,12 +174,12 @@ void StageBroken()
           "name": "Broken",
           "entry": "Broken.dll",
           "type": "assembly",
-          "extraInfo": { "api": "999", "format_version": "1", "entryType": "Broken.BrokenPlugin" }
+          "extraInfo": { "api": "999", "format_version": "1" }
         }
         """);
 }
 
-// 另一种插件类型的包：入口是脚本文件，清单里没有 entryType（脚本 Provider 不需要它）。
+// 另一种插件类型的包：入口是脚本文件，清单与程序集型同形 —— 入口怎么找是各自 Provider 的事。
 void StageScript()
 {
     var package = Path.Combine(pluginsRoot, "Lua");

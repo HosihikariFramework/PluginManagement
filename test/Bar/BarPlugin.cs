@@ -1,5 +1,7 @@
 using Hosihikari;
 
+[assembly: EntryPoint<Bar.BarPlugin>]
+
 namespace Bar;
 
 public sealed class BarPlugin : IPlugin
