@@ -9,22 +9,13 @@ jobs:
   assertions:
     runs-on: ubuntu-latest
     steps:
-      # 检出到子目录，让 ../../Hosihikari.Abstractions 这个相对路径成立。
       - uses: actions/checkout@v4
-        with:
-          path: PluginManagement
-
-      # shortcut: Abstractions 尚未作为包发布，跨仓 ProjectReference 只能靠并列检出满足。
-      # 它发布到 feed 之后，这一段与那条 ProjectReference 一起换掉（见仓库 README 的待办）。
-      - uses: actions/checkout@v4
-        with:
-          repository: HosihikariFramework/Abstractions
-          path: Hosihikari.Abstractions
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
 
       # 宿主把十二条断言跑一遍，任一条不过就以非零退出 —— 门槛就在这里（ADR-0015）。
+      # 契约从 nuget.org 取，与外部插件作者走的是同一条路。
       - name: 跑断言
-        run: dotnet run --project PluginManagement/host/Hosihikari.PluginManager.Host.csproj -c Release
+        run: dotnet run --project host/Hosihikari.PluginManager.Host.csproj -c Release
