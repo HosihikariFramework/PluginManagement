@@ -9,7 +9,10 @@ jobs:
   assertions:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: 本仓
+        uses: actions/checkout@v4
+        with:
+          path: Hosihikari.PluginManager
 
       # 契约与核心一起改：并列摆放才能编到新契约；单独 clone 仍可走 nuget.org 的包。
       - name: 契约
@@ -25,4 +28,5 @@ jobs:
       # 宿主把整份断言清单跑一遍，任一条不过就以非零退出 —— 门槛就在这里（ADR-0015）。
       # 这里不写条数：它会变，而写死的数字只会变成下一处过时的注释。
       - name: 跑断言
+        working-directory: Hosihikari.PluginManager
         run: dotnet run --project host/Hosihikari.PluginManager.Host.csproj -c Release
