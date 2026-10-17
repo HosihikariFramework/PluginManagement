@@ -127,7 +127,10 @@ public static class Packager
         IReadOnlyList<string> sharedLayer,
         List<string> problems)
     {
-        var declared = manifest.ExtraInfo.GetValueOrDefault("packages");
+        var declared = manifest.ExtraInfo.TryGetValue("packages", out var packagesValue)
+                       && packagesValue.ValueKind == JsonValueKind.String
+            ? packagesValue.GetString()
+            : null;
         if (string.IsNullOrWhiteSpace(declared))
         {
             return true;
