@@ -1,41 +1,53 @@
 # Hosihikari.PluginManager
 
-星光框架的**核心**：把插件包发现出来、按依赖图装载、各自关进一个可回收的 ALC、驱动它的生命周期，并在任何一环失败时只让它自己倒下。
+[English](README.md) | [简体中文](README.zh_hans.md)
 
-插件契约在另一个仓与另一个包：[`Hosihikari.Abstractions`](https://www.nuget.org/packages/Hosihikari.Abstractions)。
+The **core** of the Hosihikari framework: it discovers plugin packages, loads them in dependency
+order, puts each one in its own collectible ALC, drives its lifecycle, and — when any step fails —
+takes down only that plugin.
 
-## 这个仓里有什么
+The plugin contract lives in another repository and another package:
+[`Hosihikari.Abstractions`](https://www.nuget.org/packages/Hosihikari.Abstractions).
+
+## What is in this repository
 
 | | |
 |---|---|
-| `src/` | 核心：发现、依赖图、程序集型 Provider、生命周期、失败隔离 |
-| `tools/Pack/` | 打包工具：装配插件包，并在打包期拦下几条报错点离病因很远的规则 |
-| `test/Foo`、`test/Bar` | 两个测试插件 —— 它们也是打包工具的头两个用户 |
-| `host/` | 断言宿主：普通 .NET 控制台，**不碰 BDS、Shim、任何载体** |
+| `src/` | The core: discovery, dependency graph, the assembly Provider, lifecycle, failure isolation |
+| `tools/Pack/` | The packaging tool: assembles plugin packages and rejects the rules whose failure would otherwise surface far from their cause |
+| `test/Foo`, `test/Bar` | Two test plugins — and the packaging tool's first two users |
+| `host/` | The assertion host: a plain .NET console, **touching no BDS, no Shim, no carrier** |
 
-## 跑一遍
+## Running it
 
 ```
 dotnet run --project host/Hosihikari.PluginManager.Host.csproj -c Release
 ```
 
-它把十四条断言跑一遍，任一条不过就以非零退出。**必须 `-c Release`** —— Debug 保留局部变量引用，会让卸载验证假失败。
+It runs the whole assertion list and exits non-zero if any of them fails. **`-c Release` is
+required** — a Debug build keeps local variable references alive and makes the unload verification
+fail spuriously.
 
-CI 跑的就是这一条命令，走的也是外部插件作者拿到契约的那条路（从 nuget.org 取包）。
+That command is what CI runs, and it gets the contract from nuget.org the same way an external
+plugin author does.
 
-## 契约怎么被拿到
+## How the contract is obtained
 
-`src/` 与 `test/` 里的项目对 `Hosihikari.Abstractions` 有两种拿法，按兄弟目录在不在自动择一：
+The projects under `src/` and `test/` pick between two references automatically, depending on
+whether the sibling checkout exists:
 
-- **两个仓并列摆放** → `ProjectReference`。改契约不用重新打包。
-- **只检出本仓**（CI、以及任何外部消费者）→ `PackageReference`，版本精确钉住。跟着契约的 API 面走。
+- **Both repositories side by side** → `ProjectReference`. Changing the contract needs no repack.
+- **This repository alone** (CI, and any external consumer) → `PackageReference`, pinned to an exact
+  version.
 
-## 不在这里的
+## What is not here
 
-- **Shim** —— 把 CLR 托管进 BDS 进程的那层原生代码，是独立的仓。
-- **脚本型插件** —— 它是另一种 Provider，独立成仓；核心只认 Provider 契约，不认识任何脚本引擎。
-- **任何 BDS 专有能力** —— 世界、实体、命令、游戏事件都不在能力面内。
+- **The Shim** — the native layer that hosts the CLR inside the BDS process — is its own repository.
+- **Scripted plugins** — a Provider of another kind, each VM in its own repository. The core knows
+  the Provider contract and nothing about any script engine.
+- **Any BDS-specific capability** — worlds, entities, commands and game events are outside the
+  framework's capability surface.
 
-## 许可
+## Licence
 
-LGPL-3.0-or-later，见 [LICENSE.md](LICENSE.md)。
+LGPL-3.0-or-later, see [LICENSE.md](LICENSE.md).
