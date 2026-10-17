@@ -153,13 +153,10 @@ checks.Add((
 var collectible = CollectibleContextCount();
 checks.Add(("A1 每插件一个 collectible ALC", collectible >= 2, $"进程内 collectible ALC 数 = {collectible}"));
 
-// A2：插件包内不得有共享层副本 —— 这是会静默失败的那条规则（ADR-0004 / ADR-0007 / ADR-0019）
+// A2：插件包内不得有共享层副本 —— 这是会静默失败的那条规则（ADR-0004 / ADR-0007 / ADR-0019）。
+// 清单用的是给打包工具的那一份，不再另写一份：同一份事实源（ADR-0026）。
 var copies = Directory.EnumerateFiles(pluginsRoot, "*.dll", SearchOption.AllDirectories)
-    .Where(file => Path.GetFileName(file) is
-        "Hosihikari.Abstractions.dll" or
-        "Hosihikari.Bindings.Stub.dll" or
-        "Microsoft.Extensions.Logging.Abstractions.dll" or
-        "Microsoft.Extensions.Configuration.Abstractions.dll")
+    .Where(file => sharedLayer.Contains(Path.GetFileName(file)))
     .ToArray();
 checks.Add(("A2 插件包内无共享层副本", copies.Length == 0, copies.Length == 0 ? "无副本" : string.Join(", ", copies)));
 
