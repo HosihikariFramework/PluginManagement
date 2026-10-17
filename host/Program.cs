@@ -30,6 +30,8 @@ Stage("Bar", withConfig: false);
 StageBroken();
 StageScript();
 StagePinned();
+StageThrowing();
+StageWrongType();
 
 // 宿主服务用现成的包拼装（ADR-0007）：DI + 日志。载体对象经服务解析交给插件（ADR-0019）。
 var collection = new ServiceCollection();
@@ -57,6 +59,7 @@ var pinnedProvider = new PinnedPluginProvider();
 host.AddProvider(new AssemblyPluginProvider(typeof(StubCarrier).Assembly));
 host.AddProvider(new ScriptPluginProvider());
 host.AddProvider(pinnedProvider);
+host.AddProvider(new ThrowingPluginProvider());
 
 Console.WriteLine("=== 加载 ===");
 host.LoadAll();
@@ -147,6 +150,39 @@ checks.Add((
     "A15 待回收的插件可以再卸一次",
     pinnedSecond.Released && !host.LoadedNames.Contains("Pinned"),
     pinnedSecond.Error ?? "已回收"
+));
+
+// A17：Provider 在装载时抛出 —— 如实把**完整异常**报出来，且这一个插件没装上（ADR-0009）
+var thrown = reported.FirstOrDefault(entry => entry.Contains(ThrowingPluginProvider.ThrowMessage));
+var thrownFull = thrown is not null && thrown.Contains(nameof(InvalidOperationException));
+checks.Add((
+    "A17 装载抛出时如实报告且隔离",
+    !host.LoadedNames.Contains("Throwing") && thrownFull,
+    thrown ?? "（没有报告）"
+));
+
+// A18：清单 type 不是 hosihikari 的包必须被拒 —— 父级态下它根本到不了我们手里（ADR-0006）
+var typeRefused = !host.LoadedNames.Contains("WrongType")
+    && reported.Any(entry => entry.Contains("type 必须是"));
+checks.Add((
+    "A18 type 写错时拒载",
+    typeRefused,
+    reported.LastOrDefault(entry => entry.Contains("type 必须是")) ?? "（未拒载）"
+));
+
+// A19：打包期同样要拦 —— 写错的包在父级那边连路由都过不去，失败点离病因很远（ADR-0006）
+var wrongTypeManifest = Path.Combine(stage, "wrong-type.json");
+File.WriteAllText(
+    wrongTypeManifest,
+    File.ReadAllText(Path.Combine(repoRoot, "test", "Foo", "manifest.json"))
+        .Replace("\"type\": \"hosihikari\"", "\"type\": \"assembly\""));
+var wrongType = Packager.Pack(
+    OutputDirectory("Foo"), wrongTypeManifest, Path.Combine(stage, "wrong-type-out"), sharedLayer);
+var typeProblem = wrongType.Problems.FirstOrDefault(problem => problem.Contains("type 必须是"));
+checks.Add((
+    "A19 打包拒绝 type 写错的清单",
+    !wrongType.Succeeded && typeProblem is not null,
+    typeProblem ?? "（未拦下）"
 ));
 
 // A1：每个插件一个 collectible ALC（ADR-0004）
@@ -247,6 +283,36 @@ void StagePinned()
           "entry": "Pinned.dll",
           "type": "hosihikari",
           "extraInfo": { "api": "1", "format_version": "1", "provider": "pinned" }
+        }
+        """);
+}
+
+// 装载时抛出的那个包：只到 Provider 为止，所以入口文件可以不存在。
+void StageThrowing()
+{
+    var package = Path.Combine(pluginsRoot, "Throwing");
+    Directory.CreateDirectory(package);
+    File.WriteAllText(Path.Combine(package, "manifest.json"), """
+        {
+          "name": "Throwing",
+          "entry": "Throwing.dll",
+          "type": "hosihikari",
+          "extraInfo": { "api": "1", "format_version": "1", "provider": "throwing" }
+        }
+        """);
+}
+
+// 清单 type 写错的那个包：别的都对，只有 type 是父级那边的另一个值。
+void StageWrongType()
+{
+    var package = Path.Combine(pluginsRoot, "WrongType");
+    Directory.CreateDirectory(package);
+    File.WriteAllText(Path.Combine(package, "manifest.json"), """
+        {
+          "name": "WrongType",
+          "entry": "WrongType.dll",
+          "type": "assembly",
+          "extraInfo": { "api": "1", "format_version": "1" }
         }
         """);
 }

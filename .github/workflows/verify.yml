@@ -15,7 +15,8 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      # 宿主把十二条断言跑一遍，任一条不过就以非零退出 —— 门槛就在这里（ADR-0015）。
+      # 宿主把整份断言清单跑一遍，任一条不过就以非零退出 —— 门槛就在这里（ADR-0015）。
+      # 这里不写条数：它会变，而写死的数字只会变成下一处过时的注释。
       # 契约从 nuget.org 取，与外部插件作者走的是同一条路。
       - name: 跑断言
         run: dotnet run --project host/Hosihikari.PluginManager.Host.csproj -c Release
