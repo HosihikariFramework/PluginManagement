@@ -1,0 +1,281 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Reflection;
+using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using Hosihikari;
+using Hosihikari.PluginManagement.Pack;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace Hosihikari.PluginManagement.Spike;
+
+internal static class RegressionChecks
+{
+    internal static IEnumerable<(string Name, bool Passed, string Detail)> Run(string root)
+    {
+        foreach (var mode in new[] { "load", "enable", "null", "provider-throw", "cleanup-throw" })
+        {
+            var directory = Path.Combine(root, mode);
+            var host = NewHost(directory);
+            var provider = new FailingProvider(mode);
+            host.AddProvider(provider);
+            var package = Stage(directory, "Broken");
+            var loaded = mode == "enable" ? LoadAll() : host.Load(package);
+            host.Events.Publish("after failure");
+            var context = provider.Context!;
+            var scope = (PluginScope)context.Events;
+            var expectedHooks = mode is "load" or "enable" or "cleanup-throw";
+            var hooksCleaned = provider.Unloads == (expectedHooks ? 1 : 0)
+                               && provider.Disables == (mode == "enable" ? 1 : 0);
+            var clean = !loaded && host.LoadedNames.Count == 0 && provider.Events == 0
+                        && context.PluginServices.Get<Marker>() is null && hooksCleaned
+                        && provider.Releases == (expectedHooks ? 1 : 0)
+                        && RejectsReleasedScope(scope);
+            yield return ($"R1 加载回滚 ({mode})", clean,
+                $"events={provider.Events} unload={provider.Unloads} disable={provider.Disables} release={provider.Releases}");
+
+            bool LoadAll()
+            {
+                host.LoadAll();
+                return host.LoadedNames.Contains("Broken");
+            }
+        }
+
+        var dependencyRoot = Path.Combine(root, "dependencies");
+        var dependencyHost = NewHost(dependencyRoot);
+        dependencyHost.AddProvider(new FailingProvider("load"));
+        Stage(dependencyRoot, "Broken");
+        Stage(dependencyRoot, "Dependent", "Broken");
+        Stage(dependencyRoot, "Transitive", "Dependent");
+        Stage(dependencyRoot, "Independent");
+        dependencyHost.LoadAll();
+        yield return ("R2 失败依赖跳过下游，独立分支继续", dependencyHost.LoadedNames.SequenceEqual(["Independent"]),
+            string.Join(",", dependencyHost.LoadedNames));
+
+        var configRoot = Path.Combine(root, "configuration");
+        var configHost = NewHost(configRoot);
+        configHost.AddProvider(new FailingProvider("none"));
+        var badConfig = Stage(configRoot, "BadConfig");
+        File.WriteAllText(Path.Combine(badConfig, "BadConfig.conf"), "foo = {");
+        Stage(configRoot, "GoodConfig");
+        var isolated = true;
+        try { configHost.LoadAll(); }
+        catch { isolated = false; }
+        yield return ("R3 坏配置只拒绝一个包", isolated && configHost.LoadedNames.SequenceEqual(["GoodConfig"]),
+            string.Join(",", configHost.LoadedNames));
+
+        var bus = new EventBus(NullLogger.Instance);
+        var weak = SubscribeCollectibleEvent(bus);
+        Collect();
+        yield return ("R4 最后一次退订释放事件类型", !weak.IsAlive, $"assembly alive={weak.IsAlive}");
+        GC.KeepAlive(bus);
+
+        var scheduler = new CountingScheduler();
+        var scopeForGrowth = new PluginScope(new EventBus(NullLogger.Instance), scheduler, new PluginServiceRegistry());
+        DisposeTasks(scopeForGrowth);
+        Collect();
+        var retained = scheduler.References.Count(reference => reference.IsAlive);
+        yield return ("R5 已释放句柄不累积", retained == 0 && scheduler.Disposed == 1000,
+            $"retained={retained} disposed={scheduler.Disposed}");
+        GC.KeepAlive(scopeForGrowth);
+
+        var concurrentScheduler = new CountingScheduler();
+        var registry = new PluginServiceRegistry();
+        var concurrentScope = new PluginScope(new EventBus(NullLogger.Instance), concurrentScheduler, registry);
+        Parallel.For(0, 2000, i =>
+        {
+            try
+            {
+                var handle = concurrentScope.RunLater(TimeSpan.FromHours(1), () => { });
+                if (i % 2 == 0) handle.Dispose();
+                if (i % 7 == 0) concurrentScope.Register(new Marker());
+                if (i == 100) concurrentScope.ReleaseAll();
+                handle.Dispose();
+            }
+            catch (ObjectDisposedException) { }
+        });
+        concurrentScope.ReleaseAll();
+        yield return ("R6 并发释放与登记不遗留资源", concurrentScheduler.Created == concurrentScheduler.Disposed
+            && concurrentScheduler.DuplicateDisposes == 0 && registry.Get<Marker>() is null
+            && RejectsReleasedScope(concurrentScope),
+            $"created={concurrentScheduler.Created} disposed={concurrentScheduler.Disposed} duplicates={concurrentScheduler.DuplicateDisposes}");
+
+        yield return ("R7 打包同时消费大量 stdout/stderr", PackOutput(Path.Combine(root, "pack")),
+            "受控 publish 进程各输出 2MiB，10 秒内应退出");
+    }
+
+    private static PluginManagerHost NewHost(string root) => new(
+        Path.Combine(root, "plugins"), Path.Combine(root, "data"), Path.Combine(root, "config"),
+        message => Console.WriteLine($"[回归] {message}"));
+
+    private static string Stage(string root, string name, string? dependency = null)
+    {
+        var directory = Path.Combine(root, "plugins", name);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "manifest.json"), JsonSerializer.Serialize(new
+        {
+            name, entry = "main", type = "hosihikari",
+            dependencies = dependency is null ? Array.Empty<object>() : [new { name = dependency }],
+            extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "regression" },
+        }));
+        return directory;
+    }
+
+    private static bool RejectsReleasedScope(PluginScope scope)
+    {
+        Action[] actions = [() => scope.Subscribe<string>(_ => { }),
+            () => scope.RunLater(TimeSpan.FromHours(1), () => { }),
+            () => scope.Register(new Marker())];
+        return actions.All(action =>
+        {
+            try { action(); return false; }
+            catch (ObjectDisposedException) { return true; }
+        });
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference SubscribeCollectibleEvent(EventBus bus)
+    {
+        var assembly = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("CollectibleRegression"),
+            AssemblyBuilderAccess.RunAndCollect);
+        var type = assembly.DefineDynamicModule("Events").DefineType("PluginEvent", TypeAttributes.Public).CreateType()!;
+        var method = new DynamicMethod("Handle", typeof(void), [type]);
+        method.GetILGenerator().Emit(OpCodes.Ret);
+        var handler = method.CreateDelegate(typeof(Action<>).MakeGenericType(type));
+        ((IDisposable)typeof(EventBus).GetMethod(nameof(EventBus.Subscribe))!
+            .MakeGenericMethod(type).Invoke(bus, [handler])!).Dispose();
+        return new WeakReference(type.Assembly);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void DisposeTasks(PluginScope scope)
+    {
+        for (var i = 0; i < 1000; i++)
+        {
+            var handle = scope.RunLater(TimeSpan.FromHours(1), () => { });
+            handle.Dispose();
+            handle.Dispose();
+        }
+    }
+
+    private static void Collect()
+    {
+        for (var i = 0; i < 10; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
+    }
+
+    private static bool PackOutput(string root)
+    {
+        var fixtureBin = Path.Combine(root, "bin");
+        Directory.CreateDirectory(fixtureBin);
+        foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory))
+            File.Copy(file, Path.Combine(fixtureBin, Path.GetFileName(file)), true);
+        var apphost = Path.Combine(AppContext.BaseDirectory,
+            "Hosihikari.PluginManager.Host" + (OperatingSystem.IsWindows() ? ".exe" : ""));
+        var fakeDotnet = Path.Combine(fixtureBin, "dotnet" + (OperatingSystem.IsWindows() ? ".exe" : ""));
+        File.Copy(apphost, fakeDotnet, true);
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(fakeDotnet, File.GetUnixFileMode(apphost));
+        var start = new ProcessStartInfo(apphost) { RedirectStandardOutput = true, RedirectStandardError = true };
+        start.ArgumentList.Add("--pack-output-regression");
+        start.ArgumentList.Add(root);
+        start.Environment["PATH"] = fixtureBin + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+        start.Environment["HOSHI_PACK_OUTPUT_FIXTURE"] = "1";
+        using var process = Process.Start(start)!;
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(10000))
+        {
+            process.Kill(entireProcessTree: true);
+            process.WaitForExit();
+            Task.WhenAll(stdout, stderr).GetAwaiter().GetResult();
+            return false;
+        }
+        Task.WhenAll(stdout, stderr).GetAwaiter().GetResult();
+        return process.ExitCode == 0;
+    }
+
+    internal static int PackOutputChild(string root)
+    {
+        var source = Path.Combine(root, "source");
+        Directory.CreateDirectory(source);
+        var manifest = Path.Combine(root, "manifest.json");
+        File.WriteAllText(manifest, JsonSerializer.Serialize(new
+        {
+            name = "OutputFixture", type = "hosihikari", entry = "main",
+            extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "regression", packages = "fixture/1.0.0" },
+        }));
+        return Packager.Pack(source, manifest, Path.Combine(root, "packages"), []).Succeeded ? 0 : 1;
+    }
+
+    private sealed class Marker { }
+
+    private sealed class FailingProvider(string mode) : IPluginProvider
+    {
+        private readonly string _mode = mode;
+        public string Type => "regression";
+        public IPluginContext? Context;
+        public int Events, Unloads, Disables, Releases;
+        public bool CanLoad(PluginManifest manifest) => manifest.Provider == Type;
+        public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context)
+        {
+            Context = context;
+            if (manifest.Name == "Broken" && mode is "null" or "provider-throw")
+            {
+                UseContext(context);
+                if (mode == "provider-throw") throw new InvalidOperationException("provider failure");
+                return null;
+            }
+            return new Instance(new Plugin(this, manifest.Name), this);
+        }
+        private void UseContext(IPluginContext context)
+        {
+            context.Events.Subscribe<string>(_ => Interlocked.Increment(ref Events));
+            context.PluginServices.Register(new Marker());
+            context.Scheduler.RunLater(TimeSpan.FromHours(1), () => Interlocked.Increment(ref Events));
+        }
+        private sealed class Instance(IPlugin plugin, FailingProvider owner) : PluginInstance(plugin)
+        {
+            public override Func<bool> Release() { owner.Releases++; return () => true; }
+        }
+        private sealed class Plugin(FailingProvider owner, string name) : IPlugin
+        {
+            public void OnLoad(IPluginContext context)
+            {
+                owner.UseContext(context);
+                if (name == "Broken" && owner._mode is "load" or "cleanup-throw")
+                    throw new InvalidOperationException("load failure");
+            }
+            public PluginHookResult OnEnable() => name == "Broken" && owner._mode == "enable"
+                ? throw new InvalidOperationException("enable failure") : PluginHookResult.Allow();
+            public PluginHookResult OnDisable() { owner.Disables++; return PluginHookResult.Allow(); }
+            public void OnUnload()
+            {
+                owner.Unloads++;
+                if (owner._mode == "cleanup-throw") throw new InvalidOperationException("unload failure");
+            }
+        }
+    }
+
+    private sealed class CountingScheduler : IScheduler
+    {
+        internal readonly ConcurrentBag<WeakReference> References = [];
+        internal int Created, Disposed, DuplicateDisposes;
+        public IDisposable RunLater(TimeSpan delay, Action work)
+        {
+            Interlocked.Increment(ref Created);
+            var disposable = new Counted(this);
+            References.Add(new WeakReference(disposable));
+            return disposable;
+        }
+        public IDisposable RunEvery(TimeSpan interval, Action work) => RunLater(interval, work);
+        private sealed class Counted(CountingScheduler owner) : IDisposable
+        {
+            private int _disposed;
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) == 0) Interlocked.Increment(ref owner.Disposed);
+                else Interlocked.Increment(ref owner.DuplicateDisposes);
+            }
+        }
+    }
+}

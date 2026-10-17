@@ -26,6 +26,10 @@ internal sealed class EventBus(ILogger logger) : IEventBus
                 if (_handlers.TryGetValue(typeof(TEvent), out var list))
                 {
                     list.Remove(handler);
+                    if (list.Count == 0)
+                    {
+                        _handlers.Remove(typeof(TEvent));
+                    }
                 }
             }
         });

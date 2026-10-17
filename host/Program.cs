@@ -8,6 +8,21 @@ using Hosihikari.PluginManagement.Spike;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
+if (args.Length > 0 && args[0] == "publish"
+    && Environment.GetEnvironmentVariable("HOSHI_PACK_OUTPUT_FIXTURE") == "1")
+{
+    Console.Out.Write(new string('o', 2 * 1024 * 1024));
+    Console.Error.Write(new string('e', 2 * 1024 * 1024));
+    var output = args[Array.IndexOf(args, "-o") + 1];
+    Directory.CreateDirectory(output);
+    return 0;
+}
+
+if (args.Length == 2 && args[0] == "--pack-output-regression")
+{
+    return RegressionChecks.PackOutputChild(args[1]);
+}
+
 // 载体中立检查（ADR-0015）：普通 .NET 控制台主机驱动核心，不碰 BDS、Shim、任何载体。
 var repoRoot = RepoRoot();
 var stage = Path.Combine(Path.GetTempPath(), "hosihikari-spike");
@@ -356,6 +371,7 @@ Console.WriteLine();
 Console.WriteLine($"[诊断] 全部卸载后残留 collectible ALC = {CollectibleContextCount()}");
 
 Console.WriteLine();
+checks.AddRange(RegressionChecks.Run(Path.Combine(stage, "regressions")));
 Console.WriteLine("=== 断言 ===");
 foreach (var (name, passed, detail) in checks)
 {

@@ -10,61 +10,93 @@ namespace Hosihikari.PluginManagement;
 internal sealed class PluginScope(IEventBus events, IScheduler scheduler, PluginServiceRegistry registry)
     : IEventBus, IScheduler, IPluginServiceRegistry
 {
-    private readonly List<IDisposable> _owned = [];
+    private readonly Lock _gate = new();
+    private readonly HashSet<Handle> _owned = [];
     private readonly List<Type> _registered = [];
+    private bool _released;
 
-    public IDisposable Subscribe<TEvent>(Action<TEvent> handler) => Track(events.Subscribe(handler));
+    public IDisposable Subscribe<TEvent>(Action<TEvent> handler) => Track(() => events.Subscribe(handler));
 
     public void Publish<TEvent>(TEvent @event) => events.Publish(@event);
 
-    public IDisposable RunLater(TimeSpan delay, Action work) => Track(scheduler.RunLater(delay, work));
+    public IDisposable RunLater(TimeSpan delay, Action work) => Track(() => scheduler.RunLater(delay, work));
 
-    public IDisposable RunEvery(TimeSpan interval, Action work) => Track(scheduler.RunEvery(interval, work));
+    public IDisposable RunEvery(TimeSpan interval, Action work) => Track(() => scheduler.RunEvery(interval, work));
 
     public bool Register<T>(T service) where T : class
     {
-        if (!registry.Register(service))
+        lock (_gate)
         {
-            return false;
-        }
+            ObjectDisposedException.ThrowIf(_released, this);
+            if (!registry.Register(service))
+            {
+                return false;
+            }
 
-        _registered.Add(typeof(T));
-        return true;
+            _registered.Add(typeof(T));
+            return true;
+        }
     }
 
     public T? Get<T>() where T : class => registry.Get<T>();
 
     internal void ReleaseAll()
     {
-        foreach (var owned in _owned.ToArray())
+        Handle[] owned;
+        lock (_gate)
         {
-            owned.Dispose();
+            if (_released)
+            {
+                return;
+            }
+
+            _released = true;
+            owned = [.. _owned];
+            _owned.Clear();
+            foreach (var type in _registered)
+            {
+                registry.Remove(type);
+            }
+
+            _registered.Clear();
         }
 
-        _owned.Clear();
-
-        // 服务登记也是共享层上的一份强引用 —— 不摘掉，它和没退订的 handler 一样把 ALC 钉死。
-        foreach (var type in _registered)
+        // Dispose outside the lock: a callback being cancelled may use this scope.
+        foreach (var handle in owned)
         {
-            registry.Remove(type);
+            handle.Dispose();
         }
-
-        _registered.Clear();
     }
 
-    private IDisposable Track(IDisposable owned)
+    private IDisposable Track(Func<IDisposable> create)
     {
-        _owned.Add(owned);
-        return new Handle(owned, _owned);
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_released, this);
+            var handle = new Handle(create(), this);
+            _owned.Add(handle);
+            return handle;
+        }
     }
 
-    /// <summary>插件自己释放时，顺手把它从本方名单里划掉，名单不会随运行时长增长。</summary>
-    private sealed class Handle(IDisposable inner, List<IDisposable> owner) : IDisposable
+    private sealed class Handle(IDisposable inner, PluginScope owner) : IDisposable
     {
+        private IDisposable? _inner = inner;
+
         public void Dispose()
         {
-            inner.Dispose();
-            owner.Remove(this);
+            var disposable = Interlocked.Exchange(ref _inner, null);
+            if (disposable is null)
+            {
+                return;
+            }
+
+            lock (owner._gate)
+            {
+                owner._owned.Remove(this);
+            }
+
+            disposable.Dispose();
         }
     }
 }

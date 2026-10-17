@@ -25,6 +25,10 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.13" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Hosihikari.PluginManager.Host" />
+  </ItemGroup>
+
   <!-- 契约来自另一个仓，两种拿法二选一：并列摆放时直接编在一起（改契约不用重新打包），
        否则走包 —— 单独 clone 与 CI 走这条，插件作者也只有这一条。 -->
   <ItemGroup Condition="Exists('../../Hosihikari.Abstractions/src/Hosihikari.Abstractions.csproj')">

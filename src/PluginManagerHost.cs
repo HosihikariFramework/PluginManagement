@@ -91,6 +91,23 @@ public sealed class PluginManagerHost
         {
             foreach (var package in DependencyGraph.Resolve(ManifestReader.Scan(_pluginsRoot, _report), _report))
             {
+                if (_slots.ContainsKey(package.Manifest.Name))
+                {
+                    continue;
+                }
+
+                var missing = package.Manifest.Dependencies
+                    .Where(dependency => dependency.Name != PluginContract.ShimModName)
+                    .Where(dependency => !_slots.TryGetValue(dependency.Name, out var slot)
+                                         || slot.State != PluginState.Loaded)
+                    .Select(dependency => dependency.Name)
+                    .ToArray();
+                if (missing.Length > 0)
+                {
+                    _report($"{package.Manifest.Name}: 依赖未加载：{string.Join(", ", missing)}，已跳过");
+                    continue;
+                }
+
                 LoadOne(package, enable: true);
             }
         }
@@ -323,66 +340,93 @@ public sealed class PluginManagerHost
     private bool LoadOne(PluginPackage package, bool enable)
     {
         var manifest = package.Manifest;
-        var provider = _providers.FirstOrDefault(p => p.CanLoad(manifest));
-        if (provider is null)
-        {
-            _report($"{manifest.Name}: 没有能处理 provider={manifest.Provider} 的 Provider");
-            return false;
-        }
-
-        var dataDirectory = Path.Combine(_dataRoot, manifest.Name);
-        Directory.CreateDirectory(dataDirectory);
-
         var scope = new PluginScope(_events, _scheduler, _registry);
-        var context = new PluginContext(
-            manifest.Name,
-            package.Directory,
-            dataDirectory,
-            _loggerFactory.CreateLogger(manifest.Name),
-            BuildConfiguration(manifest.Name, package.Directory),
-            scope,
-            _services ?? PluginContext.Empty,
-            this);
-
-        PluginInstance? instance;
+        PluginInstance? instance = null;
+        var loadStarted = false;
+        var enableStarted = false;
+        var loaded = false;
         try
         {
+            var provider = _providers.FirstOrDefault(p => p.CanLoad(manifest));
+            if (provider is null)
+            {
+                _report($"{manifest.Name}: 没有能处理 provider={manifest.Provider} 的 Provider");
+                return false;
+            }
+
+            var dataDirectory = Path.Combine(_dataRoot, manifest.Name);
+            Directory.CreateDirectory(dataDirectory);
+            var context = new PluginContext(
+                manifest.Name,
+                package.Directory,
+                dataDirectory,
+                _loggerFactory.CreateLogger(manifest.Name),
+                BuildConfiguration(manifest.Name, package.Directory),
+                scope,
+                _services ?? PluginContext.Empty,
+                this);
+
             instance = provider.Load(manifest, package.Directory, context);
-        }
-        catch (Exception ex)
-        {
-            // 带完整异常：在别人的进程里没有调试器，消息本身就是唯一的线索（ADR-0009 的可见通道）。
-            _report($"{manifest.Name}: 加载抛出 —— {ex.Demystify()}");
-            return false;
-        }
+            if (instance is null)
+            {
+                _report($"{manifest.Name}: 加载失败");
+                return false;
+            }
 
-        if (instance is null)
-        {
-            _report($"{manifest.Name}: 加载失败");
-            return false;
-        }
-
-        try
-        {
+            loadStarted = true;
             instance.Plugin.OnLoad(context);
             if (enable)
             {
+                enableStarted = true;
                 var result = instance.Plugin.OnEnable();
                 if (!result.Allowed)
                 {
                     _report($"{manifest.Name}: 启用被拒绝 —— {result.Reason ?? "未给原因"}（留在册、未启用）");
                 }
             }
+
+            _slots[manifest.Name] = new Slot(manifest) { Instance = instance, Scope = scope };
+            loaded = true;
+            return true;
         }
         catch (Exception ex)
         {
-            _report($"{manifest.Name}: 钩子抛出，已退回 —— {ex.Demystify()}");
-            instance.Release();
+            _report($"{manifest.Name}: 加载抛出，已退回 —— {ex.Demystify()}");
             return false;
         }
+        finally
+        {
+            if (!loaded)
+            {
+                if (enableStarted)
+                {
+                    Cleanup(() => instance!.Plugin.OnDisable());
+                }
 
-        _slots[manifest.Name] = new Slot(manifest) { Instance = instance, Scope = scope };
-        return true;
+                if (loadStarted)
+                {
+                    Cleanup(() => instance!.Plugin.OnUnload());
+                }
+
+                Cleanup(scope.ReleaseAll);
+                if (instance is not null)
+                {
+                    Cleanup(() => instance.Release());
+                }
+            }
+        }
+
+        void Cleanup(Action cleanup)
+        {
+            try
+            {
+                cleanup();
+            }
+            catch (Exception ex)
+            {
+                _report($"{manifest.Name}: 加载回滚抛出 —— {ex.Demystify()}");
+            }
+        }
     }
 
     /// <summary>

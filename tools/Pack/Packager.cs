@@ -179,8 +179,11 @@ public static class Packager
             }
 
             using var process = Process.Start(start)!;
-            var errorText = process.StandardError.ReadToEnd();
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
             process.WaitForExit();
+            Task.WhenAll(outputTask, errorTask).GetAwaiter().GetResult();
+            var errorText = errorTask.Result;
             if (process.ExitCode != 0)
             {
                 problems.Add($"还原第三方包失败（{string.Join(", ", references)}）：{errorText.Trim()}");
