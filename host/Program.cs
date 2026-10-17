@@ -138,6 +138,14 @@ checks.Add(("A7 非 ALC 的插件类型走同一契约", File.Exists(ranFile), F
 var refused = host.Unload("Foo");
 checks.Add(("A4 有依赖者时拒绝卸载", !refused.Released && !string.IsNullOrEmpty(refused.Error), refused.Error ?? "（未拒绝）"));
 
+// A24：传递依赖的第二段 —— Bar 现在依赖者是 Lua，卸它同样要被拒（ADR-0004）
+var barRefused = host.Unload("Bar");
+checks.Add((
+    "A24 传递依赖上仍然拒绝卸载",
+    !barRefused.Released && barRefused.Error?.Contains("Lua") == true,
+    barRefused.Error ?? "（未拒绝）"
+));
+
 // A13：父级态下父级把包逐个交过来（ADR-0003）—— 这个包不在 plugins/ 下，只有交付能让它进来
 var delivered = host.Load(Path.Combine(stage, "parented", "Pinned"));
 checks.Add((
@@ -246,17 +254,17 @@ var copies = Directory.EnumerateFiles(pluginsRoot, "*.dll", SearchOption.AllDire
     .ToArray();
 checks.Add(("A2 插件包内无共享层副本", copies.Length == 0, copies.Length == 0 ? "无副本" : string.Join(", ", copies)));
 
+// 从链条末端往回卸：Lua 在前、Foo 在后。反序是依赖图的另一半承诺（ADR-0004）。
+var lua = host.Unload("Lua");
+checks.Add(("   链条末端的脚本插件可卸", lua.Released, lua.Error ?? "已回收"));
+
 // A3：卸载后真回收，而不是"停用就算卸了"（ADR-0004）
 var bar = host.Unload("Bar");
 checks.Add(("A3 卸载后 ALC 真回收", bar.Released, bar.Error ?? "已回收"));
 
-// 依赖者卸掉之后，Foo 应可卸
+// 依赖者都卸掉之后，Foo 才可卸
 var foo = host.Unload("Foo");
 checks.Add(("   依赖者卸掉后 Foo 可卸", foo.Released, foo.Error ?? "已回收"));
-
-// 脚本插件没有依赖者，随时可卸
-var lua = host.Unload("Lua");
-checks.Add(("   脚本插件可卸", lua.Released, lua.Error ?? "已回收"));
 
 // 收尾自检：全部卸载后不应再有任何 collectible ALC（ADR-0004）。
 GC.Collect();
@@ -317,6 +325,7 @@ void StageScript()
           "name": "Lua",
           "entry": "main.lua",
           "type": "hosihikari",
+          "dependencies": [ { "name": "Bar" } ],
           "extraInfo": { "api": "1", "format_version": "1", "provider": "script" }
         }
         """);
