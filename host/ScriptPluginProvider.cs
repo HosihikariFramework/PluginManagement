@@ -35,13 +35,18 @@ internal sealed class ScriptPlugin(string source, string dataDirectory) : IPlugi
 {
     public void OnLoad(IPluginContext context) => Console.WriteLine($"[Lua] OnLoad   {source.Trim().Length} 字符的脚本");
 
-    public void OnEnable()
+    public PluginHookResult OnEnable()
     {
         Console.WriteLine("[Lua] OnEnable");
         File.WriteAllText(Path.Combine(dataDirectory, "ran.txt"), source.Trim());
+        return PluginHookResult.Allow();
     }
 
-    public void OnDisable() => Console.WriteLine("[Lua] OnDisable");
+    public PluginHookResult OnDisable()
+    {
+        Console.WriteLine("[Lua] OnDisable");
+        return PluginHookResult.Allow();
+    }
 
     public void OnUnload() => Console.WriteLine("[Lua] OnUnload");
 }

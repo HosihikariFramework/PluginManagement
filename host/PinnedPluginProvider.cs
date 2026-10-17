@@ -39,9 +39,17 @@ internal sealed class PinnedPlugin : IPlugin
         Record("loaded");
     }
 
-    public void OnEnable() => Record("enabled");
+    public PluginHookResult OnEnable()
+    {
+        Record("enabled");
+        return PluginHookResult.Allow();
+    }
 
-    public void OnDisable() => Record("disabled");
+    public PluginHookResult OnDisable()
+    {
+        Record("disabled");
+        return PluginHookResult.Allow();
+    }
 
     public void OnUnload() => Record("unloaded");
 

@@ -19,6 +19,10 @@ public static class NativeEntry
     private static IntPtr s_logCallback;
     private static IntPtr s_logUser;
 
+    // 故障卸载成功后，通知载体把父级的账摘掉（ADR-0030）。
+    private static IntPtr s_removalCallback;
+    private static IntPtr s_removalUser;
+
     /// <summary>
     /// 父级交来日志出口：<paramref name="arg"/> 指向 <c>{ void* callback; void* user; }</c>。
     /// 两个指针都要拷出来 —— 那块内存在调用方栈上，返回就没了。
@@ -36,6 +40,25 @@ public static class NativeEntry
         s_logCallback = Marshal.ReadIntPtr(arg);
         s_logUser = Marshal.ReadIntPtr(arg, IntPtr.Size);
         return s_logCallback == IntPtr.Zero ? 1 : 0;
+    }
+
+    /// <summary>
+    /// 父级交来“移除”出口：<paramref name="arg"/> 指向 <c>{ void* callback; void* user; }</c>。
+    /// 托管侧在故障卸载成功后调用它，载体据此摘掉父级注册表里的那一条（ADR-0030）。
+    /// </summary>
+    /// <param name="arg">指向那两个指针的缓冲。</param>
+    /// <param name="argSizeInBytes">缓冲的字节数。</param>
+    [UnmanagedCallersOnly]
+    public static int SetRemovalSink(IntPtr arg, int argSizeInBytes)
+    {
+        if (arg == IntPtr.Zero || argSizeInBytes < IntPtr.Size * 2)
+        {
+            return 1;
+        }
+
+        s_removalCallback = Marshal.ReadIntPtr(arg);
+        s_removalUser = Marshal.ReadIntPtr(arg, IntPtr.Size);
+        return s_removalCallback == IntPtr.Zero ? 1 : 0;
     }
 
     /// <summary>
@@ -151,6 +174,38 @@ public static class NativeEntry
         _ => "停用",
     };
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void RemovalCallback(IntPtr user, IntPtr nameUtf8);
+
+    /// <summary>把“已移除”转给载体；没有出口时（验证宿主、自持态）只留在日志里。</summary>
+    private static void ForwardRemoval(string name)
+    {
+        var callback = s_removalCallback;
+        if (callback == IntPtr.Zero)
+        {
+            return;
+        }
+
+        try
+        {
+            var sink = Marshal.GetDelegateForFunctionPointer<RemovalCallback>(callback);
+            var text = Marshal.StringToCoTaskMemUTF8(name);
+            try
+            {
+                sink(s_removalUser, text);
+            }
+            finally
+            {
+                Marshal.FreeCoTaskMem(text);
+            }
+        }
+        catch (Exception ex)
+        {
+            s_loggerFactory?.CreateLogger("Hosihikari")
+                .LogError(ex, "通知载体移除 {Name} 失败", name);
+        }
+    }
+
     private static int StartCore(bool scanPlugins)
     {
         // 有父级的出口就转发过去；没有（自持态、验证宿主）才落到控制台。
@@ -183,7 +238,8 @@ public static class NativeEntry
                 Path.Combine(root, "data", "hosihikari"),
                 Path.Combine(root, "config", "hosihikari"),
                 entry => logger.LogError("加载问题：{Entry}", entry),
-                services);
+                services,
+                ForwardRemoval);
             s_host.AddProvider(new AssemblyPluginProvider());
 
             if (scanPlugins)

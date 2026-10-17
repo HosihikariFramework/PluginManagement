@@ -30,6 +30,9 @@ Stage("Bar", withConfig: false);
 StageBroken();
 StageScript();
 StagePinned();
+StageGuarded("Guarded");
+StageGuarded("Faulty");
+StageGuarded("Vanishing");
 StageThrowing();
 StageWrongType();
 
@@ -45,6 +48,8 @@ var services = collection.BuildServiceProvider();
 Directory.CreateDirectory(configRoot);
 File.WriteAllText(Path.Combine(configRoot, "Foo.conf"), "greeting = \"overridden\"\n");
 
+// 故障卸载成功后宿主会回调这里；用并发包，后台线程也会写（ADR-0030）。
+var removed = new System.Collections.Concurrent.ConcurrentBag<string>();
 var host = new PluginManagerHost(
     pluginsRoot,
     dataRoot,
@@ -54,11 +59,18 @@ var host = new PluginManagerHost(
         reported.Add(entry);
         Console.WriteLine($"[框架] {entry}");
     },
-    services);
+    services,
+    name =>
+    {
+        removed.Add(name);
+        Console.WriteLine($"[框架] 已移除 {name}");
+    });
 var pinnedProvider = new PinnedPluginProvider();
+var guardedProvider = new GuardedPluginProvider();
 host.AddProvider(new AssemblyPluginProvider(typeof(StubCarrier).Assembly));
 host.AddProvider(new ScriptPluginProvider());
 host.AddProvider(pinnedProvider);
+host.AddProvider(guardedProvider);
 host.AddProvider(new ThrowingPluginProvider());
 
 Console.WriteLine("=== 加载 ===");
@@ -192,6 +204,52 @@ checks.Add((
     pinnedSecond.Error ?? "已回收"
 ));
 
+// A29：拒绝启用留在册、未启用（ADR-0030）
+var guardedLoaded = host.Load(Path.Combine(stage, "parented", "Guarded"));
+guardedProvider.RefuseEnable = true;
+var enableRefused = !host.Enable("Guarded") && host.LoadedNames.Contains("Guarded");
+guardedProvider.RefuseEnable = false;
+var enableAllowed = host.Enable("Guarded");
+checks.Add((
+    "A29 拒绝启用留在册、未启用",
+    guardedLoaded && enableRefused && enableAllowed,
+    $"loaded={guardedLoaded} refused={enableRefused} later={enableAllowed}"
+));
+
+// A30：拒绝停用让卸载中止；允许后才真正卸掉（ADR-0030）
+guardedProvider.RefuseDisable = true;
+var disableRefused = !host.Disable("Guarded");
+var unloadRefused = host.Unload("Guarded");
+var stillLoaded = host.LoadedNames.Contains("Guarded");
+guardedProvider.RefuseDisable = false;
+var unloadedAfter = host.Unload("Guarded");
+checks.Add((
+    "A30 拒绝停用中止卸载",
+    disableRefused && !unloadRefused.Released
+        && unloadRefused.Error?.Contains("拒绝停用") == true && stillLoaded && unloadedAfter.Released,
+    unloadRefused.Error ?? "（居然卸掉了）"
+));
+
+// A31：钩子抛异常触发故障卸载，并通知载体（ADR-0030）
+var faultyLoaded = host.Load(Path.Combine(stage, "parented", "Faulty"));
+var faultyEnable = host.Enable("Faulty");
+checks.Add((
+    "A31 钩子抛出触发故障卸载",
+    faultyLoaded && !faultyEnable && !host.LoadedNames.Contains("Faulty")
+        && removed.Any(name => name == "Faulty"),
+    $"removed=[{string.Join(", ", removed)}]"
+));
+
+// A32：Provider 在钩子之外报告的故障走同一条路径（ADR-0030）
+var vanishingLoaded = host.Load(Path.Combine(stage, "parented", "Vanishing"));
+Thread.Sleep(150);
+checks.Add((
+    "A32 钩子之外的故障也卸载并通知",
+    vanishingLoaded && !host.LoadedNames.Contains("Vanishing")
+        && removed.Any(name => name == "Vanishing"),
+    $"removed=[{string.Join(", ", removed)}]"
+));
+
 // A17：Provider 在装载时抛出 —— 如实把**完整异常**报出来，且这一个插件没装上（ADR-0009）
 var thrown = reported.FirstOrDefault(entry => entry.Contains(ThrowingPluginProvider.ThrowMessage));
 var thrownFull = thrown is not null && thrown.Contains(nameof(InvalidOperationException));
@@ -257,7 +315,7 @@ var withPackages = WriteManifest("with-packages", """
       "name": "Bar",
       "entry": "Bar.dll",
       "type": "hosihikari",
-      "extraInfo": { "api": "1", "format_version": "1", "packages": "System.IO.Hashing/10.0.0" }
+      "extraInfo": { "api": "2", "format_version": "1", "packages": "System.IO.Hashing/10.0.0" }
     }
     """);
 var declared = Packager.Pack(
@@ -351,7 +409,7 @@ void StageScript()
           "entry": "main.lua",
           "type": "hosihikari",
           "dependencies": [ { "name": "Bar" } ],
-          "extraInfo": { "api": "1", "format_version": "1", "provider": "script" }
+          "extraInfo": { "api": "2", "format_version": "1", "provider": "script" }
         }
         """);
 }
@@ -366,7 +424,22 @@ void StagePinned()
           "name": "Pinned",
           "entry": "Pinned.dll",
           "type": "hosihikari",
-          "extraInfo": { "api": "1", "format_version": "1", "provider": "pinned" }
+          "extraInfo": { "api": "2", "format_version": "1", "provider": "pinned" }
+        }
+        """);
+}
+
+// 拒绝与故障的检验包：同样放在 plugins/ 外面，由测试逐个交付（ADR-0030）。
+void StageGuarded(string name)
+{
+    var package = Path.Combine(stage, "parented", name);
+    Directory.CreateDirectory(package);
+    File.WriteAllText(Path.Combine(package, "manifest.json"), $$"""
+        {
+          "name": "{{name}}",
+          "entry": "{{name}}.dll",
+          "type": "hosihikari",
+          "extraInfo": { "api": "2", "format_version": "1", "provider": "guarded" }
         }
         """);
 }
@@ -377,7 +450,7 @@ string ManifestLike(string name, string entry) => $$"""
       "name": "{{name}}",
       "entry": "{{entry}}",
       "type": "hosihikari",
-      "extraInfo": { "api": "1", "format_version": "1" }
+      "extraInfo": { "api": "2", "format_version": "1" }
     }
     """;
 
@@ -398,7 +471,7 @@ void StageThrowing()
           "name": "Throwing",
           "entry": "Throwing.dll",
           "type": "hosihikari",
-          "extraInfo": { "api": "1", "format_version": "1", "provider": "throwing" }
+          "extraInfo": { "api": "2", "format_version": "1", "provider": "throwing" }
         }
         """);
 }
@@ -413,7 +486,7 @@ void StageWrongType()
           "name": "WrongType",
           "entry": "WrongType.dll",
           "type": "assembly",
-          "extraInfo": { "api": "1", "format_version": "1" }
+          "extraInfo": { "api": "2", "format_version": "1" }
         }
         """);
 }

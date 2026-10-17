@@ -46,9 +46,17 @@ public sealed class FooPlugin : IPlugin
         // 这两个句柄**故意不保存、不退订**：框架应当在卸载时自己收回（ADR-0004）。
     }
 
-    public void OnEnable() => Console.WriteLine("[Foo] OnEnable");
+    public PluginHookResult OnEnable()
+    {
+        Console.WriteLine("[Foo] OnEnable");
+        return PluginHookResult.Allow();
+    }
 
-    public void OnDisable() => Console.WriteLine("[Foo] OnDisable");
+    public PluginHookResult OnDisable()
+    {
+        Console.WriteLine("[Foo] OnDisable");
+        return PluginHookResult.Allow();
+    }
 
     public void OnUnload() => Console.WriteLine("[Foo] OnUnload");
 }

@@ -26,9 +26,17 @@ public sealed class BarPlugin : IPlugin
             $"{lib.Location} | {System.Runtime.Loader.AssemblyLoadContext.GetLoadContext(lib)?.Name}");
     }
 
-    public void OnEnable() => Console.WriteLine("[Bar] OnEnable");
+    public PluginHookResult OnEnable()
+    {
+        Console.WriteLine("[Bar] OnEnable");
+        return PluginHookResult.Allow();
+    }
 
-    public void OnDisable() => Console.WriteLine("[Bar] OnDisable");
+    public PluginHookResult OnDisable()
+    {
+        Console.WriteLine("[Bar] OnDisable");
+        return PluginHookResult.Allow();
+    }
 
     public void OnUnload() => Console.WriteLine("[Bar] OnUnload");
 }

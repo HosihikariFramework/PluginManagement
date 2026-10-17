@@ -15,6 +15,8 @@ public sealed class PluginManagerHost
     private readonly string _configRoot;
     private readonly Action<string> _report;
     private readonly IServiceProvider? _services;
+    private readonly Action<string>? _removed;
+    private readonly object _gate = new();
     private readonly ILoggerFactory _loggerFactory;
     private readonly IEventBus _events;
     private readonly IScheduler _scheduler;
@@ -27,13 +29,15 @@ public sealed class PluginManagerHost
         string dataRoot,
         string configRoot,
         Action<string> report,
-        IServiceProvider? services = null)
+        IServiceProvider? services = null,
+        Action<string>? removed = null)
     {
         _pluginsRoot = pluginsRoot;
         _dataRoot = dataRoot;
         _configRoot = configRoot;
         _report = report;
         _services = services;
+        _removed = removed;
         _loggerFactory = services?.GetService(typeof(ILoggerFactory)) as ILoggerFactory
                          ?? NullLoggerFactory.Instance;
         _events = new EventBus(_loggerFactory.CreateLogger("Hosihikari.Events"));
@@ -64,8 +68,18 @@ public sealed class PluginManagerHost
     }
 
     /// <summary>在场的插件名。已经放下、只等回收的那些不算（见 <see cref="PluginState"/>）。</summary>
-    public IReadOnlyCollection<string> LoadedNames =>
-        _slots.Where(slot => slot.Value.State == PluginState.Loaded).Select(slot => slot.Key).ToArray();
+    public IReadOnlyCollection<string> LoadedNames
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _slots.Where(slot => slot.Value.State == PluginState.Loaded)
+                    .Select(slot => slot.Key)
+                    .ToArray();
+            }
+        }
+    }
 
     /// <summary>载体适配器要把载体事件并进来，所以事件总线得对外可达（ADR-0007）。</summary>
     public IEventBus Events => _events;
@@ -73,9 +87,12 @@ public sealed class PluginManagerHost
     /// <summary>自持态：插件包就在 <c>plugins/</c> 下，由我们枚举、按依赖排序后逐个装（ADR-0018）。</summary>
     public void LoadAll()
     {
-        foreach (var package in DependencyGraph.Resolve(ManifestReader.Scan(_pluginsRoot, _report), _report))
+        lock (_gate)
         {
-            LoadOne(package, enable: true);
+            foreach (var package in DependencyGraph.Resolve(ManifestReader.Scan(_pluginsRoot, _report), _report))
+            {
+                LoadOne(package, enable: true);
+            }
         }
     }
 
@@ -89,30 +106,45 @@ public sealed class PluginManagerHost
     /// </summary>
     public bool Load(string packageDirectory)
     {
-        if (ManifestReader.Read(packageDirectory, _report) is not { } package)
+        lock (_gate)
         {
-            return false;
-        }
+            if (ManifestReader.Read(packageDirectory, _report) is not { } package)
+            {
+                return false;
+            }
 
-        if (_slots.TryGetValue(package.Manifest.Name, out var slot))
-        {
-            _report($"{package.Manifest.Name}: 已经在册（{slot.State}）");
-            return false;
-        }
+            if (_slots.TryGetValue(package.Manifest.Name, out var slot))
+            {
+                _report($"{package.Manifest.Name}: 已经在册（{slot.State}）");
+                return false;
+            }
 
-        return LoadOne(package, enable: false);
+            return LoadOne(package, enable: false);
+        }
     }
 
     /// <summary>
     /// 启用一个在场的插件（ADR-0003：父级能单独启停子插件）。启停状态由父级维护，这里只把钩子调到。
     /// </summary>
-    public bool Enable(string name) => DriveHook(name, enable: true);
+    public bool Enable(string name)
+    {
+        lock (_gate)
+        {
+            return DriveHook(name, enable: true);
+        }
+    }
 
     /// <summary>
     /// 停用一个在场的插件。框架不额外做什么：作用域里的订阅与定时器在**卸载**时才收回，
     /// 停用只是让插件停止接活（ADR-0020 的默认全起之下，这是父级的手动动作）。
     /// </summary>
-    public bool Disable(string name) => DriveHook(name, enable: false);
+    public bool Disable(string name)
+    {
+        lock (_gate)
+        {
+            return DriveHook(name, enable: false);
+        }
+    }
 
     private bool DriveHook(string name, bool enable)
     {
@@ -125,20 +157,21 @@ public sealed class PluginManagerHost
 
         try
         {
-            if (enable)
+            var result = enable
+                ? slot.Instance!.Plugin.OnEnable()
+                : slot.Instance!.Plugin.OnDisable();
+            if (!result.Allowed)
             {
-                slot.Instance!.Plugin.OnEnable();
-            }
-            else
-            {
-                slot.Instance!.Plugin.OnDisable();
+                _report($"{name}: {(enable ? "启用" : "停用")}被拒绝 —— {result.Reason ?? "未给原因"}");
+                return false;
             }
 
             return true;
         }
         catch (Exception ex)
         {
-            _report($"{name}: {(enable ? "启用" : "停用")}钩子抛出 —— {ex.Message}");
+            _report($"{name}: {(enable ? "启用" : "停用")}钩子抛出 —— {ex.Demystify()}");
+            ReportFault(name, $"{(enable ? "启用" : "停用")}钩子抛出");
             return false;
         }
     }
@@ -152,56 +185,102 @@ public sealed class PluginManagerHost
     /// </summary>
     public UnloadResult Unload(string name)
     {
-        if (!_slots.TryGetValue(name, out var slot))
+        lock (_gate)
         {
-            return UnloadResult.Failed($"{name} 未加载");
-        }
-
-        if (slot.State == PluginState.Loaded)
-        {
-            var dependents = _slots.Values
-                .Where(loaded => loaded.State == PluginState.Loaded)
-                .Where(p => p.Manifest.Dependencies.Any(d => d.Name == name))
-                .Select(p => p.Manifest.Name)
-                .ToArray();
-            if (dependents.Length > 0)
+            if (!_slots.TryGetValue(name, out var slot))
             {
-                return UnloadResult.Failed($"仍有依赖者：{string.Join(", ", dependents)}");
+                return UnloadResult.Failed($"{name} 未加载");
             }
 
-            Detach(slot);
-        }
+            if (slot.State == PluginState.Loaded)
+            {
+                var dependents = _slots.Values
+                    .Where(loaded => loaded.State == PluginState.Loaded)
+                    .Where(p => p.Manifest.Dependencies.Any(d => d.Name == name))
+                    .Select(p => p.Manifest.Name)
+                    .ToArray();
+                if (dependents.Length > 0)
+                {
+                    return UnloadResult.Failed($"仍有依赖者：{string.Join(", ", dependents)}");
+                }
 
-        // 到这里 slot 里已经没有指向实例与 ALC 的字段了，可以验回收。
-        if (!Collected(slot.Verify!))
+                var refusal = Detach(slot);
+                if (refusal is not null)
+                {
+                    return UnloadResult.Failed($"{name} 拒绝停用：{refusal}");
+                }
+            }
+
+            // 到这里 slot 里已经没有指向实例与 ALC 的字段了，可以验回收。
+            if (!Collected(slot.Verify!))
+            {
+                // 说"回收"而不是"ALC"：释放句柄长什么样是 Provider 自己的事（ADR-0010）。
+                return UnloadResult.Failed($"{name} 已经放下，但回收验证没通过 —— 再卸载一次会重新验证");
+            }
+
+            _slots.Remove(name);
+            return UnloadResult.Ok();
+        }
+    }
+
+    /// <summary>
+    /// 故障：钩子抛出，或 Provider 在钩子之外发现插件死了（ADR-0030）。
+    /// 由宿主发起卸载；成功后才通知载体摘账。
+    /// </summary>
+    internal void ReportFault(string name, string reason)
+    {
+        lock (_gate)
         {
-            // 说"回收"而不是"ALC"：释放句柄长什么样是 Provider 自己的事（ADR-0010）。
-            return UnloadResult.Failed($"{name} 已经放下，但回收验证没通过 —— 再卸载一次会重新验证");
-        }
+            if (!_slots.TryGetValue(name, out var slot) || slot.State != PluginState.Loaded)
+            {
+                return;
+            }
 
-        _slots.Remove(name);
-        return UnloadResult.Ok();
+            _report($"{name}: 故障 —— {reason}");
+            var result = Unload(name);
+            if (result.Released)
+            {
+                _removed?.Invoke(name);
+            }
+            else
+            {
+                _report($"{name}: 故障卸载没完成 —— {result.Error}");
+            }
+        }
     }
 
     /// <summary>
     /// 停用、卸载、放下实例与作用域，只留下验证器。单独一个不内联的方法，是为了让本方法返回后，
     /// 实例与它的 ALC 在栈上再无强引用 —— 回收验证的前提（ADR-0023）。
     /// 状态与字段一起改完：表里留着实例等于把 ALC 钉死。
+    /// 停用被拒绝时返回原因，此时什么都不放开（ADR-0030）。
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void Detach(Slot slot)
+    private string? Detach(Slot slot)
     {
         var instance = slot.Instance!;
         var scope = slot.Scope!;
 
         try
         {
-            instance.Plugin.OnDisable();
+            var result = instance.Plugin.OnDisable();
+            if (!result.Allowed)
+            {
+                return result.Reason ?? "未给原因";
+            }
+        }
+        catch (Exception ex)
+        {
+            _report($"{slot.Manifest.Name}: 停用钩子抛出 —— {ex.Demystify()}");
+        }
+
+        try
+        {
             instance.Plugin.OnUnload();
         }
         catch (Exception ex)
         {
-            _report($"{slot.Manifest.Name}: 停用钩子抛出 —— {ex.Message}");
+            _report($"{slot.Manifest.Name}: 卸载钩子抛出 —— {ex.Demystify()}");
         }
 
         // 作者没退订的订阅、没释放的定时器，在这里一并收回 —— 否则它们把 ALC 钉在共享服务上。
@@ -213,6 +292,7 @@ public sealed class PluginManagerHost
         slot.Instance = null;
         slot.Scope = null;
         slot.State = PluginState.Detached;
+        return null;
     }
 
     /// <summary>回收验证：只攥着验证器，它内部是一个 WeakReference。</summary>
@@ -287,12 +367,16 @@ public sealed class PluginManagerHost
             instance.Plugin.OnLoad(context);
             if (enable)
             {
-                instance.Plugin.OnEnable();
+                var result = instance.Plugin.OnEnable();
+                if (!result.Allowed)
+                {
+                    _report($"{manifest.Name}: 启用被拒绝 —— {result.Reason ?? "未给原因"}（留在册、未启用）");
+                }
             }
         }
         catch (Exception ex)
         {
-            _report($"{manifest.Name}: 钩子抛出，已退回 —— {ex.Message}");
+            _report($"{manifest.Name}: 钩子抛出，已退回 —— {ex.Demystify()}");
             instance.Release();
             return false;
         }
@@ -360,6 +444,9 @@ internal sealed class PluginContext(
     public IPluginServiceRegistry PluginServices => scope;
 
     public IServiceProvider Services => services;
+
+    /// <summary>Provider 在钩子之外发现插件死了时走这里（ADR-0030）。</summary>
+    public void ReportFault(string reason) => host.ReportFault(name, reason);
 
     /// <summary>Provider 是个插件包，装载时用这个把自己交出去（ADR-0002）。</summary>
     public void RegisterProvider(IPluginProvider provider) => host.AddProvider(provider);
