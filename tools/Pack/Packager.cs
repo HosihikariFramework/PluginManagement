@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using Hosihikari;
@@ -106,7 +107,116 @@ public static class Packager
         }
 
         File.Copy(manifestPath, Path.Combine(packageDirectory, "manifest.json"), overwrite: true);
+
+        // 清单里声明的第三方包在**这里**还原 —— 供应链留在打包那一刻，服务端加载时不联网。
+        if (!RestorePackages(manifest, packageDirectory, sharedLayer, problems))
+        {
+            return new PackResult(false, null, problems);
+        }
+
         return new PackResult(true, packageDirectory, []);
+    }
+
+    /// <summary>
+    /// 按清单 <c>extraInfo.packages</c> 还原第三方包，把它们的 dll 放进包里。
+    /// 格式是逗号分隔的 <c>Id/Version</c>；依赖闭包交给 SDK 解析，打包工具不自己碰 NuGet。
+    /// </summary>
+    private static bool RestorePackages(
+        PluginManifest manifest,
+        string packageDirectory,
+        IReadOnlyList<string> sharedLayer,
+        List<string> problems)
+    {
+        var declared = manifest.ExtraInfo.GetValueOrDefault("packages");
+        if (string.IsNullOrWhiteSpace(declared))
+        {
+            return true;
+        }
+
+        var references = declared
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToArray();
+
+        var workspace = Path.Combine(Path.GetTempPath(), "hosihikari-pack-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(workspace);
+
+            var items = string.Join(
+                Environment.NewLine,
+                references.Select(reference =>
+                {
+                    var parts = reference.Split('/', 2);
+                    var version = parts.Length > 1 ? parts[1] : "*";
+                    return $"    <PackageReference Include=\"{parts[0]}\" Version=\"{version}\" />";
+                }));
+
+            var project = Path.Combine(workspace, "restore.csproj");
+            File.WriteAllText(
+                project,
+                "<Project Sdk=\"Microsoft.NET.Sdk\">" + Environment.NewLine
+                + "  <PropertyGroup>" + Environment.NewLine
+                + "    <TargetFramework>net10.0</TargetFramework>" + Environment.NewLine
+                + "    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>" + Environment.NewLine
+                + "  </PropertyGroup>" + Environment.NewLine
+                + "  <ItemGroup>" + Environment.NewLine
+                + items + Environment.NewLine
+                + "  </ItemGroup>" + Environment.NewLine
+                + "</Project>" + Environment.NewLine);
+
+            var output = Path.Combine(workspace, "out");
+            var start = new ProcessStartInfo("dotnet")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var argument in new[] { "publish", project, "-c", "Release", "-o", output, "--nologo", "-v", "q" })
+            {
+                start.ArgumentList.Add(argument);
+            }
+
+            using var process = Process.Start(start)!;
+            var errorText = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            if (process.ExitCode != 0)
+            {
+                problems.Add($"还原第三方包失败（{string.Join(", ", references)}）：{errorText.Trim()}");
+                return false;
+            }
+
+            // 共享层的程序集不随包走（ADR-0004）；restore 工程自己那份也没有意义。
+            foreach (var file in Directory.EnumerateFiles(output, "*.dll"))
+            {
+                var name = Path.GetFileName(file);
+                if (name == "restore.dll" || sharedLayer.Contains(name))
+                {
+                    continue;
+                }
+
+                File.Copy(file, Path.Combine(packageDirectory, name), overwrite: true);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            problems.Add($"还原第三方包失败（{string.Join(", ", references)}）：{ex.Message}");
+            return false;
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(workspace))
+                {
+                    Directory.Delete(workspace, recursive: true);
+                }
+            }
+            catch (IOException)
+            {
+                // 清理失败不影响结果。
+            }
+        }
     }
 
     /// <summary>

@@ -251,6 +251,23 @@ checks.Add((
     noEntryProblem ?? "（未拦下）"
 ));
 
+// A26：清单里声明的第三方包在打包期还原并进包（供应链留在打包那一刻）
+var withPackages = WriteManifest("with-packages", """
+    {
+      "name": "Bar",
+      "entry": "Bar.dll",
+      "type": "hosihikari",
+      "extraInfo": { "api": "1", "format_version": "1", "packages": "System.IO.Hashing/10.0.0" }
+    }
+    """);
+var declared = Packager.Pack(
+    OutputDirectory("Bar"), withPackages, Path.Combine(stage, "with-packages-out"), sharedLayer);
+var restored = declared.PackageDirectory is null
+    ? "（没打出包）"
+    : (File.Exists(Path.Combine(declared.PackageDirectory, "System.IO.Hashing.dll")) ? "已还原" : "缺 dll");
+checks.Add(("A26 清单声明的第三方包在打包期还原", declared.Succeeded && restored == "已还原",
+    declared.Succeeded ? restored : string.Join("；", declared.Problems)));
+
 // A1：每个插件一个 collectible ALC（ADR-0004）
 var collectible = CollectibleContextCount();
 checks.Add(("A1 每插件一个 collectible ALC", collectible >= 2, $"进程内 collectible ALC 数 = {collectible}"));
