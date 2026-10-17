@@ -209,6 +209,32 @@ checks.Add((
     typeProblem ?? "（未拦下）"
 ));
 
+// A22：entry 指向的文件不在构建输出里 —— 报错点离病因很远，所以拦在打包期（ADR-0008）
+var missingEntry = Packager.Pack(
+    OutputDirectory("Lib"),
+    WriteManifest("missing-entry", ManifestLike("Lib", "Nope.dll")),
+    Path.Combine(stage, "missing-entry-out"),
+    sharedLayer);
+var missingProblem = missingEntry.Problems.FirstOrDefault(problem => problem.Contains("不在构建输出里"));
+checks.Add((
+    "A22 打包拒绝不存在的入口",
+    !missingEntry.Succeeded && missingProblem is not null,
+    missingProblem ?? "（未拦下）"
+));
+
+// A23：入口特性不是恰好一个 —— Lib 一个都没声明
+var noEntry = Packager.Pack(
+    OutputDirectory("Lib"),
+    WriteManifest("no-entry", ManifestLike("Lib", "Lib.dll")),
+    Path.Combine(stage, "no-entry-out"),
+    sharedLayer);
+var noEntryProblem = noEntry.Problems.FirstOrDefault(problem => problem.Contains("个入口"));
+checks.Add((
+    "A23 打包拒绝没有入口声明的程序集",
+    !noEntry.Succeeded && noEntryProblem is not null,
+    noEntryProblem ?? "（未拦下）"
+));
+
 // A1：每个插件一个 collectible ALC（ADR-0004）
 var collectible = CollectibleContextCount();
 checks.Add(("A1 每插件一个 collectible ALC", collectible >= 2, $"进程内 collectible ALC 数 = {collectible}"));
@@ -309,6 +335,23 @@ void StagePinned()
           "extraInfo": { "api": "1", "format_version": "1", "provider": "pinned" }
         }
         """);
+}
+
+// 造一份只改一两处的清单，别把整份 JSON 复制到测试里。
+string ManifestLike(string name, string entry) => $$"""
+    {
+      "name": "{{name}}",
+      "entry": "{{entry}}",
+      "type": "hosihikari",
+      "extraInfo": { "api": "1", "format_version": "1" }
+    }
+    """;
+
+string WriteManifest(string name, string json)
+{
+    var path = Path.Combine(stage, name + ".json");
+    File.WriteAllText(path, json);
+    return path;
 }
 
 // 装载时抛出的那个包：只到 Provider 为止，所以入口文件可以不存在。
