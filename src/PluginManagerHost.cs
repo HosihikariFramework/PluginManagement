@@ -43,7 +43,24 @@ public sealed class PluginManagerHost
         Directory.CreateDirectory(_configRoot);
     }
 
-    public void AddProvider(IPluginProvider provider) => _providers.Add(provider);
+    /// <summary>
+    /// 登记一个 Provider。同名（<see cref="IPluginProvider.Type"/>）的已经在了就拒掉后一个，
+    /// 并把冲突报出来（ADR-0009）—— 静默让后一个落空的话，写它的那个人会以为自己的包被接管了。
+    /// </summary>
+    /// <returns>登记成功为 <c>true</c>；同名的已在则为 <c>false</c>，先来的那个不变。</returns>
+    public bool AddProvider(IPluginProvider provider)
+    {
+        var existing = _providers.FirstOrDefault(registered => registered.Type == provider.Type);
+        if (existing is not null)
+        {
+            _report($"{provider.Type}: 已经有 {existing.GetType().Name} 处理这个类型，"
+                    + $"{provider.GetType().Name} 被拒 —— 插件类型名必须唯一");
+            return false;
+        }
+
+        _providers.Add(provider);
+        return true;
+    }
 
     /// <summary>在场的插件名。已经放下、只等回收的那些不算（见 <see cref="PluginState"/>）。</summary>
     public IReadOnlyCollection<string> LoadedNames =>

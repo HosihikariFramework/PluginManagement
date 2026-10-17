@@ -71,6 +71,14 @@ Thread.Sleep(300);
 
 var checks = new List<(string Name, bool Passed, string Detail)>();
 
+// A25：同名 Provider 再登记会被拒并报出来，先来的那个不变（ADR-0009）
+var duplicateRefused = !host.AddProvider(new ScriptPluginProvider());
+checks.Add((
+    "A25 同名 Provider 被拒并报错",
+    duplicateRefused && reported.Any(entry => entry.Contains("插件类型名必须唯一")),
+    reported.LastOrDefault(entry => entry.Contains("插件类型名必须唯一")) ?? "（没有报告）"
+));
+
 // A9：一个 handler 抛出，其余照常收到（ADR-0014）
 var heardFile = Path.Combine(dataRoot, "Foo", "heard.txt");
 var heard = File.Exists(heardFile) ? File.ReadAllText(heardFile) : "（没收到）";
