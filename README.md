@@ -1,6 +1,6 @@
 # Hosihikari.PluginManager
 
-Hosihikari 框架的**核心**：把插件包发现出来、按依赖图装载、各自关进一个可回收的 ALC、驱动它的生命周期，并在任何一环失败时只让它自己倒下。
+星光框架的**核心**：把插件包发现出来、按依赖图装载、各自关进一个可回收的 ALC、驱动它的生命周期，并在任何一环失败时只让它自己倒下。
 
 插件契约在另一个仓与另一个包：[`Hosihikari.Abstractions`](https://www.nuget.org/packages/Hosihikari.Abstractions)。
 

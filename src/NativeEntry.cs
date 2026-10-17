@@ -71,7 +71,7 @@ public static class NativeEntry
 
     private static int Deliver(IntPtr arg, Verb verb)
     {
-        var logger = s_loggerFactory?.CreateLogger("Hosihikari");
+        var logger = s_loggerFactory?.CreateLogger("星光");
         var action = ActionName(verb);
 
         // 整段包在 try 里：这是托管与父级之间唯一的一道缝，异常越过它等于把服务端一起拖下水
@@ -131,7 +131,7 @@ public static class NativeEntry
         s_loggerFactory = LoggerFactory.Create(builder => builder
             .AddSimpleConsole(options => options.SingleLine = true)
             .SetMinimumLevel(LogLevel.Information));
-        var logger = s_loggerFactory.CreateLogger("Hosihikari");
+        var logger = s_loggerFactory.CreateLogger("星光");
 
         try
         {
