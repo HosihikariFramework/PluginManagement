@@ -31,11 +31,26 @@ internal sealed class PinnedPluginInstance(PinnedPlugin plugin, PinnedPluginProv
 
 internal sealed class PinnedPlugin : IPlugin
 {
-    public void OnLoad(IPluginContext context) => Console.WriteLine("[Pinned] OnLoad");
+    private string? _dataDirectory;
 
-    public void OnEnable() => Console.WriteLine("[Pinned] OnEnable");
+    public void OnLoad(IPluginContext context)
+    {
+        _dataDirectory = context.DataDirectory;
+        Record("loaded");
+    }
 
-    public void OnDisable() => Console.WriteLine("[Pinned] OnDisable");
+    public void OnEnable() => Record("enabled");
 
-    public void OnUnload() => Console.WriteLine("[Pinned] OnUnload");
+    public void OnDisable() => Record("disabled");
+
+    public void OnUnload() => Record("unloaded");
+
+    /// <summary>把最后一个到达的钩子写下来 —— 断言据此看"谁在驱动"（ADR-0003）。</summary>
+    private void Record(string hook)
+    {
+        if (_dataDirectory is not null)
+        {
+            File.WriteAllText(Path.Combine(_dataDirectory, "hook.txt"), hook);
+        }
+    }
 }

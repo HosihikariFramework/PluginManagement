@@ -39,7 +39,7 @@ public static class NativeEntry
     /// <param name="arg">包目录的 UTF-8 指针。</param>
     /// <param name="argSizeInBytes">那块缓冲的字节数，含结尾的 null。</param>
     [UnmanagedCallersOnly]
-    public static int LoadPlugin(IntPtr arg, int argSizeInBytes) => Deliver(arg, load: true);
+    public static int LoadPlugin(IntPtr arg, int argSizeInBytes) => Deliver(arg, Verb.Load);
 
     /// <summary>
     /// 父级收回一个插件：参数是插件名的、以 null 结尾的 UTF-8 指针（ADR-0003）。
@@ -48,14 +48,34 @@ public static class NativeEntry
     /// <param name="arg">插件名的 UTF-8 指针。</param>
     /// <param name="argSizeInBytes">那块缓冲的字节数，含结尾的 null。</param>
     [UnmanagedCallersOnly]
-    public static int UnloadPlugin(IntPtr arg, int argSizeInBytes) => Deliver(arg, load: false);
+    public static int UnloadPlugin(IntPtr arg, int argSizeInBytes) => Deliver(arg, Verb.Unload);
 
-    private static int Deliver(IntPtr arg, bool load)
+    /// <summary>父级单独启停一个子插件（ADR-0003）：参数是插件名的 UTF-8 指针。</summary>
+    /// <param name="arg">插件名的 UTF-8 指针。</param>
+    /// <param name="argSizeInBytes">那块缓冲的字节数，含结尾的 null。</param>
+    [UnmanagedCallersOnly]
+    public static int EnablePlugin(IntPtr arg, int argSizeInBytes) => Deliver(arg, Verb.Enable);
+
+    /// <inheritdoc cref="EnablePlugin"/>
+    [UnmanagedCallersOnly]
+    public static int DisablePlugin(IntPtr arg, int argSizeInBytes) => Deliver(arg, Verb.Disable);
+
+    /// <summary>父级能让我们做的四件事。它驱动的是同一个入口，只是动作不同。</summary>
+    private enum Verb
+    {
+        Load,
+        Unload,
+        Enable,
+        Disable,
+    }
+
+    private static int Deliver(IntPtr arg, Verb verb)
     {
         var logger = s_loggerFactory?.CreateLogger("Hosihikari");
+        var action = ActionName(verb);
 
         // 整段包在 try 里：这是托管与父级之间唯一的一道缝，异常越过它等于把服务端一起拖下水
-        // （ADR-0009）。一次交付失败只是这个插件没装上，父级照常跑。
+        // （ADR-0009）。一次交付失败只是这个插件没动成，父级照常跑。
         try
         {
             // UTF-8 而不是 UTF-16：原生侧的名字与路径本来就是 UTF-8，跨平台也是同一个字节形状。
@@ -68,30 +88,43 @@ public static class NativeEntry
 
             if (s_host is null)
             {
-                logger?.LogError("核心还没起来，{Action} {Name} 落空", load ? "装载" : "卸载", text);
+                logger?.LogError("核心还没起来，{Action} {Name} 落空", action, text);
                 return 1;
             }
 
-            if (load)
+            // 前三个的失败原因由核心自己报过（它会走 _report）。
+            switch (verb)
             {
-                // 失败原因由核心自己报过（它会走 _report）。
-                return s_host.Load(text) ? 0 : 1;
-            }
+                case Verb.Load:
+                    return s_host.Load(text) ? 0 : 1;
+                case Verb.Enable:
+                    return s_host.Enable(text) ? 0 : 1;
+                case Verb.Disable:
+                    return s_host.Disable(text) ? 0 : 1;
+                default:
+                    var result = s_host.Unload(text);
+                    if (!result.Released)
+                    {
+                        logger?.LogError("卸载 {Name} 没完成：{Reason}", text, result.Error);
+                    }
 
-            var result = s_host.Unload(text);
-            if (!result.Released)
-            {
-                logger?.LogError("卸载 {Name} 没完成：{Reason}", text, result.Error);
+                    return result.Released ? 0 : 1;
             }
-
-            return result.Released ? 0 : 1;
         }
         catch (Exception ex)
         {
-            logger?.LogError(ex, "{Action} 时抛出，本次交付作废", load ? "装载" : "卸载");
+            logger?.LogError(ex, "{Action} 时抛出，本次交付作废", action);
             return 1;
         }
     }
+
+    private static string ActionName(Verb verb) => verb switch
+    {
+        Verb.Load => "装载",
+        Verb.Unload => "卸载",
+        Verb.Enable => "启用",
+        _ => "停用",
+    };
 
     private static int StartCore(bool scanPlugins)
     {

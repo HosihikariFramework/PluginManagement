@@ -135,6 +135,19 @@ checks.Add((
     delivered ? string.Join(", ", host.LoadedNames) : "交付被拒"
 ));
 
+// A20：父级态下启停由父级驱动（ADR-0003）—— 交付时不自动启用，父级一发话钩子就该到
+var hookFile = Path.Combine(dataRoot, "Pinned", "hook.txt");
+var afterDelivery = File.Exists(hookFile) ? File.ReadAllText(hookFile) : "（没调过）";
+var disabled = host.Disable("Pinned");
+var afterDisable = File.ReadAllText(hookFile);
+var enabled = host.Enable("Pinned");
+var afterEnable = File.ReadAllText(hookFile);
+checks.Add((
+    "A20 父级驱动启停，交付时不自动启用",
+    afterDelivery == "loaded" && disabled && afterDisable == "disabled" && enabled && afterEnable == "enabled",
+    $"交付后 {afterDelivery} → 停用 {afterDisable} → 启用 {afterEnable}"
+));
+
 // A14：放下之后回收验证没过，就是没卸掉 —— 照实报失败（ADR-0004）
 var pinnedFirst = host.Unload("Pinned");
 checks.Add((

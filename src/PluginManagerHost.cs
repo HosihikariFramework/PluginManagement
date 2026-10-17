@@ -56,13 +56,17 @@ public sealed class PluginManagerHost
     {
         foreach (var package in DependencyGraph.Resolve(ManifestReader.Scan(_pluginsRoot, _report), _report))
         {
-            LoadOne(package);
+            LoadOne(package, enable: true);
         }
     }
 
     /// <summary>
     /// 父级态：父级把包逐个交过来（ADR-0003）。顺序与依赖由父级的计划保证，我们只管装。
     /// 返回它有没有装上 —— 失败原因已经进了日志。
+    ///
+    /// **不在这里启用**：启停由父级驱动（<see cref="IPlugin.OnDisable"/> 的约定），
+    /// 父级自己的启用阶段随后会经 <see cref="Enable"/> 把钩子调到。这里先启用的话，
+    /// 插件会被启用两次，而中间那段的"已启用"是父级不知道的。
     /// </summary>
     public bool Load(string packageDirectory)
     {
@@ -77,7 +81,47 @@ public sealed class PluginManagerHost
             return false;
         }
 
-        return LoadOne(package);
+        return LoadOne(package, enable: false);
+    }
+
+    /// <summary>
+    /// 启用一个在场的插件（ADR-0003：父级能单独启停子插件）。启停状态由父级维护，这里只把钩子调到。
+    /// </summary>
+    public bool Enable(string name) => DriveHook(name, enable: true);
+
+    /// <summary>
+    /// 停用一个在场的插件。框架不额外做什么：作用域里的订阅与定时器在**卸载**时才收回，
+    /// 停用只是让插件停止接活（ADR-0020 的默认全起之下，这是父级的手动动作）。
+    /// </summary>
+    public bool Disable(string name) => DriveHook(name, enable: false);
+
+    private bool DriveHook(string name, bool enable)
+    {
+        // 已放下、待回收的不算在场 —— 它已经不在跑了，钩子无处可调。
+        if (!_slots.TryGetValue(name, out var slot) || slot.State != PluginState.Loaded)
+        {
+            _report($"{name}: 不在场，{(enable ? "启用" : "停用")}落空");
+            return false;
+        }
+
+        try
+        {
+            if (enable)
+            {
+                slot.Instance!.Plugin.OnEnable();
+            }
+            else
+            {
+                slot.Instance!.Plugin.OnDisable();
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _report($"{name}: {(enable ? "启用" : "停用")}钩子抛出 —— {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>
@@ -177,7 +221,7 @@ public sealed class PluginManagerHost
             .AddEnvironmentVariables()
             .Build();
 
-    private bool LoadOne(PluginPackage package)
+    private bool LoadOne(PluginPackage package, bool enable)
     {
         var manifest = package.Manifest;
         var provider = _providers.FirstOrDefault(p => p.CanLoad(manifest));
@@ -221,7 +265,10 @@ public sealed class PluginManagerHost
         try
         {
             instance.Plugin.OnLoad(context);
-            instance.Plugin.OnEnable();
+            if (enable)
+            {
+                instance.Plugin.OnEnable();
+            }
         }
         catch (Exception ex)
         {
