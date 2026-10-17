@@ -90,6 +90,17 @@ checks.Add((
     $"Foo: {fooLib} ／ Bar: {barLib}"
 ));
 
+// A21：插件之间只走通道 —— 用共享层里的类型登记与解析，两个 ALC 看到同一个类型对象；
+// 同类型再次登记被拒、先来的留着（ADR-0009 / 0026 / 0027）。
+// 收回这条不单独断言：登记没被摘掉的话，Foo 的 ALC 就被钉住，下面那条卸载断言会失败。
+var peerFile = Path.Combine(dataRoot, "Bar", "peer.txt");
+var peer = File.Exists(peerFile) ? File.ReadAllText(peerFile) : "（插件没写出东西）";
+checks.Add((
+    "A21 跨插件服务登记与解析",
+    peer == "Foo.FooPlugin | 冲突登记=False",
+    peer
+));
+
 // A11：两个测试插件都经打包工具装配成了包
 var packedOk = Directory.Exists(Path.Combine(pluginsRoot, "Foo")) && Directory.Exists(Path.Combine(pluginsRoot, "Bar"));
 checks.Add(("A11 打包工具产出包", packedOk, packedOk ? "Foo / Bar" : "缺包"));

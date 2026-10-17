@@ -17,6 +17,7 @@ public sealed class PluginManagerHost
     private readonly ILoggerFactory _loggerFactory;
     private readonly IEventBus _events;
     private readonly IScheduler _scheduler;
+    private readonly PluginServiceRegistry _registry = new();
     private readonly Dictionary<string, Slot> _slots = new(StringComparer.Ordinal);
     private readonly List<IPluginProvider> _providers = [];
 
@@ -234,7 +235,7 @@ public sealed class PluginManagerHost
         var dataDirectory = Path.Combine(_dataRoot, manifest.Name);
         Directory.CreateDirectory(dataDirectory);
 
-        var scope = new PluginScope(_events, _scheduler);
+        var scope = new PluginScope(_events, _scheduler, _registry);
         var context = new PluginContext(
             manifest.Name,
             package.Directory,
@@ -335,6 +336,8 @@ internal sealed class PluginContext(
     public IEventBus Events => scope;
 
     public IScheduler Scheduler => scope;
+
+    public IPluginServiceRegistry PluginServices => scope;
 
     public IServiceProvider Services => services;
 

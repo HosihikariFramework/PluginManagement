@@ -19,6 +19,10 @@ public sealed class FooPlugin : IPlugin
 
         File.WriteAllText(Path.Combine(context.DataDirectory, "carrier.txt"), seen);
 
+        // 以契约类型为键登记自己，给别的插件取（ADR-0027）。IPlugin 来自共享层，
+        // 所以两个 ALC 看到的是同一个类型对象。
+        context.PluginServices.Register<IPlugin>(this);
+
         // 探针：Foo 这边的 Lib 是哪一份（ADR-0026）。
         var lib = typeof(Lib.Marker).Assembly;
         File.WriteAllText(

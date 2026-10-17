@@ -7,9 +7,11 @@ namespace Hosihikari.PluginManagement;
 /// 卸载验证永远过不去 —— 而且订阅当时毫无异样，只有卸载时才暴露（ADR-0004）。
 /// 框架知道是哪一次订阅属于哪个插件，就不该把这件事留给作者自觉。
 /// </summary>
-internal sealed class PluginScope(IEventBus events, IScheduler scheduler) : IEventBus, IScheduler
+internal sealed class PluginScope(IEventBus events, IScheduler scheduler, PluginServiceRegistry registry)
+    : IEventBus, IScheduler, IPluginServiceRegistry
 {
     private readonly List<IDisposable> _owned = [];
+    private readonly List<Type> _registered = [];
 
     public IDisposable Subscribe<TEvent>(Action<TEvent> handler) => Track(events.Subscribe(handler));
 
@@ -19,6 +21,19 @@ internal sealed class PluginScope(IEventBus events, IScheduler scheduler) : IEve
 
     public IDisposable RunEvery(TimeSpan interval, Action work) => Track(scheduler.RunEvery(interval, work));
 
+    public bool Register<T>(T service) where T : class
+    {
+        if (!registry.Register(service))
+        {
+            return false;
+        }
+
+        _registered.Add(typeof(T));
+        return true;
+    }
+
+    public T? Get<T>() where T : class => registry.Get<T>();
+
     internal void ReleaseAll()
     {
         foreach (var owned in _owned.ToArray())
@@ -27,6 +42,14 @@ internal sealed class PluginScope(IEventBus events, IScheduler scheduler) : IEve
         }
 
         _owned.Clear();
+
+        // 服务登记也是共享层上的一份强引用 —— 不摘掉，它和没退订的 handler 一样把 ALC 钉死。
+        foreach (var type in _registered)
+        {
+            registry.Remove(type);
+        }
+
+        _registered.Clear();
     }
 
     private IDisposable Track(IDisposable owned)
