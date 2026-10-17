@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 
@@ -171,11 +172,18 @@ public static class NativeEntry
         {
             // 服务端根就是进程的工作目录；配置与数据都相对它找（ADR-0018）。
             var root = Directory.GetCurrentDirectory();
+            // 宿主从 services 里取 ILoggerFactory；不传的话插件拿到的是 NullLogger ——
+            // 它们的每一行都会消失，而且不会有人报错。
+            var services = new ServiceCollection()
+                .AddSingleton(s_loggerFactory!)
+                .BuildServiceProvider();
+
             s_host = new PluginManagerHost(
                 Path.Combine(root, "plugins"),
                 Path.Combine(root, "data", "hosihikari"),
                 Path.Combine(root, "config", "hosihikari"),
-                entry => logger.LogError("加载问题：{Entry}", entry));
+                entry => logger.LogError("加载问题：{Entry}", entry),
+                services);
             s_host.AddProvider(new AssemblyPluginProvider());
 
             if (scanPlugins)
