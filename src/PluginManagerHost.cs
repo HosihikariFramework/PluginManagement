@@ -243,7 +243,8 @@ public sealed class PluginManagerHost
             _loggerFactory.CreateLogger(manifest.Name),
             BuildConfiguration(manifest.Name, package.Directory),
             scope,
-            _services ?? PluginContext.Empty);
+            _services ?? PluginContext.Empty,
+            this);
 
         PluginInstance? instance;
         try
@@ -319,7 +320,8 @@ internal sealed class PluginContext(
     ILogger logger,
     IConfiguration configuration,
     PluginScope scope,
-    IServiceProvider services) : IPluginContext
+    IServiceProvider services,
+    PluginManagerHost host) : IPluginContext
 {
     internal static readonly IServiceProvider Empty = new EmptyServices();
 
@@ -340,6 +342,9 @@ internal sealed class PluginContext(
     public IPluginServiceRegistry PluginServices => scope;
 
     public IServiceProvider Services => services;
+
+    /// <summary>Provider 是个插件包，装载时用这个把自己交出去（ADR-0002）。</summary>
+    public void RegisterProvider(IPluginProvider provider) => host.AddProvider(provider);
 
     private sealed class EmptyServices : IServiceProvider
     {
