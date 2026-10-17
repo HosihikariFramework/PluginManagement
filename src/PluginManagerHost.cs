@@ -35,8 +35,8 @@ public sealed class PluginManagerHost
         _services = services;
         _loggerFactory = services?.GetService(typeof(ILoggerFactory)) as ILoggerFactory
                          ?? NullLoggerFactory.Instance;
-        _events = new EventBus(_loggerFactory.CreateLogger("星光.Events"));
-        _scheduler = new Scheduler(_loggerFactory.CreateLogger("星光.Scheduler"));
+        _events = new EventBus(_loggerFactory.CreateLogger("Hosihikari.Events"));
+        _scheduler = new Scheduler(_loggerFactory.CreateLogger("Hosihikari.Scheduler"));
 
         // 两个根先建出来：父级态下不会走 LoadAll，而插件写数据、运营方放覆盖都指望它们在。
         Directory.CreateDirectory(_dataRoot);
