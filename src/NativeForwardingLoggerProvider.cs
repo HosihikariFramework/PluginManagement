@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 
 using Microsoft.Extensions.Logging;
@@ -40,7 +41,8 @@ internal sealed unsafe class NativeForwardingLoggerProvider(IntPtr callback, Int
             var message = $"{category}: {formatter(state, error)}";
             if (error is not null)
             {
-                message += " —— " + error;
+                // 异步与迭代器的栈是编译器生成的（MoveNext、<Foo>d__3），不去谜读不懂。
+                message += " —— " + error.Demystify();
             }
 
             var bytes = Encoding.UTF8.GetBytes(message + "\0");

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Hocon.Extensions.Configuration;
 using Microsoft.Extensions.Configuration;
@@ -271,7 +272,7 @@ public sealed class PluginManagerHost
         catch (Exception ex)
         {
             // 带完整异常：在别人的进程里没有调试器，消息本身就是唯一的线索（ADR-0009 的可见通道）。
-            _report($"{manifest.Name}: 加载抛出 —— {ex}");
+            _report($"{manifest.Name}: 加载抛出 —— {ex.Demystify()}");
             return false;
         }
 

@@ -13,6 +13,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- 日志是唯一的线索（ADR-0009）；异步与迭代器的栈是编译器生成的，不去谜读不懂。 -->
+    <PackageReference Include="Ben.Demystifier" Version="0.4.1" />
     <PackageReference Include="Hocon.Extensions.Configuration" Version="2.0.4" />
     <PackageReference Include="McMaster.NETCore.Plugins" Version="2.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.13" />
