@@ -1,0 +1,22 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Hosihikari.PluginManager.csproj" />
+  </Folder>
+  <Folder Name="/host/">
+    <Project Path="host/Hosihikari.PluginManager.Host.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/Pack/Hosihikari.Plugin.Pack.csproj" />
+  </Folder>
+  <!--
+    test/ 下的都是夹具：打包工具的输入与断言的证据来源，不是产品代码。
+    兄弟仓的契约工程不列进来 —— 单独 clone 本仓时它根本不存在，
+    并列摆放时由 ProjectReference 自己接上。
+  -->
+  <Folder Name="/test/">
+    <Project Path="test/Foo/Foo.csproj" />
+    <Project Path="test/Bar/Bar.csproj" />
+    <Project Path="test/Lib/Lib.csproj" />
+    <Project Path="test/Bindings.Stub/Bindings.Stub.csproj" />
+  </Folder>
+</Solution>
