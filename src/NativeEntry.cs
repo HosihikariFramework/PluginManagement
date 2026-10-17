@@ -13,6 +13,30 @@ public static class NativeEntry
     private static PluginManagerHost? s_host;
     private static ILoggerFactory? s_loggerFactory;
 
+    // 父级的日志出口。原生侧在启动时把自己的日志器包成一个 C 回调递进来 ——
+    // 之后核心与插件的每一行都进父级日志，而不是我们自己的控制台。
+    private static IntPtr s_logCallback;
+    private static IntPtr s_logUser;
+
+    /// <summary>
+    /// 父级交来日志出口：<paramref name="arg"/> 指向 <c>{ void* callback; void* user; }</c>。
+    /// 两个指针都要拷出来 —— 那块内存在调用方栈上，返回就没了。
+    /// </summary>
+    /// <param name="arg">指向那两个指针的缓冲。</param>
+    /// <param name="argSizeInBytes">缓冲的字节数。</param>
+    [UnmanagedCallersOnly]
+    public static int SetLogSink(IntPtr arg, int argSizeInBytes)
+    {
+        if (arg == IntPtr.Zero || argSizeInBytes < IntPtr.Size * 2)
+        {
+            return 1;
+        }
+
+        s_logCallback = Marshal.ReadIntPtr(arg);
+        s_logUser = Marshal.ReadIntPtr(arg, IntPtr.Size);
+        return s_logCallback == IntPtr.Zero ? 1 : 0;
+    }
+
     /// <summary>
     /// 自持态入口：插件包就在 <c>plugins/</c> 下，由我们枚举装载（ADR-0018）。
     ///
@@ -128,9 +152,19 @@ public static class NativeEntry
 
     private static int StartCore(bool scanPlugins)
     {
-        s_loggerFactory = LoggerFactory.Create(builder => builder
-            .AddSimpleConsole(options => options.SingleLine = true)
-            .SetMinimumLevel(LogLevel.Information));
+        // 有父级的出口就转发过去；没有（自持态、验证宿主）才落到控制台。
+        s_loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.SetMinimumLevel(LogLevel.Information);
+            if (s_logCallback == IntPtr.Zero)
+            {
+                builder.AddSimpleConsole(options => options.SingleLine = true);
+            }
+            else
+            {
+                builder.AddProvider(new NativeForwardingLoggerProvider(s_logCallback, s_logUser));
+            }
+        });
         var logger = s_loggerFactory.CreateLogger("Hosihikari");
 
         try
