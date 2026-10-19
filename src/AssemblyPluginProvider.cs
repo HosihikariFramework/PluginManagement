@@ -10,7 +10,7 @@ public sealed class AssemblyPluginProvider(params Assembly[] sharedSources) : IP
 {
     // 共享层 = 契约 + 契约引用的抽象包 + 当前载体的绑定程序集（ADR-0007 / ADR-0019）。
     // 两侧的类型必须同身份，转型与实现接口才成立；插件包里也不许有这些的副本。
-    private readonly Type[] _sharedTypes =
+    private static readonly Type[] BaseSharedTypes =
     [
         typeof(IPlugin),
         typeof(IPluginContext),
@@ -18,6 +18,24 @@ public sealed class AssemblyPluginProvider(params Assembly[] sharedSources) : IP
         typeof(ILogger),
         typeof(ILoggerFactory),
         typeof(IConfiguration),
+    ];
+
+    /// <summary>
+    /// 打包期要剔除的共享层程序集名。与 <see cref="BaseSharedTypes"/> 同源；后两项是共享
+    /// 类型的运行时依赖闭包。运行期仍按类型判身份，打包期只看得见文件名。
+    /// </summary>
+    public static IReadOnlyList<string> SharedAssemblyFileNames { get; } =
+    [
+        .. BaseSharedTypes
+            .Select(type => type.Assembly.GetName().Name + ".dll")
+            .Distinct(StringComparer.OrdinalIgnoreCase),
+        "Microsoft.Extensions.DependencyInjection.Abstractions.dll",
+        "Microsoft.Extensions.Primitives.dll",
+    ];
+
+    private readonly Type[] _sharedTypes =
+    [
+        .. BaseSharedTypes,
         .. sharedSources.SelectMany(source => source.GetExportedTypes()),
     ];
 

@@ -146,10 +146,21 @@ public sealed class PluginManagerHost
     /// </summary>
     public bool Enable(string name)
     {
+        List<string>? reports = null;
+        string? fault = null;
+        bool result;
         lock (_gate)
         {
-            return DriveHook(name, enable: true);
+            result = DriveHook(name, enable: true, ref reports, out fault);
         }
+
+        ReportAll(reports);
+        if (fault is not null)
+        {
+            ReportFault(name, fault);
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -158,18 +169,31 @@ public sealed class PluginManagerHost
     /// </summary>
     public bool Disable(string name)
     {
+        List<string>? reports = null;
+        string? fault = null;
+        bool result;
         lock (_gate)
         {
-            return DriveHook(name, enable: false);
+            result = DriveHook(name, enable: false, ref reports, out fault);
         }
+
+        ReportAll(reports);
+        if (fault is not null)
+        {
+            ReportFault(name, fault);
+        }
+
+        return result;
     }
 
-    private bool DriveHook(string name, bool enable)
+    private bool DriveHook(string name, bool enable, ref List<string>? reports, out string? fault)
     {
+        fault = null;
+
         // 已放下、待回收的不算在场 —— 它已经不在跑了，钩子无处可调。
         if (!_slots.TryGetValue(name, out var slot) || slot.State != PluginState.Loaded)
         {
-            _report($"{name}: 不在场，{(enable ? "启用" : "停用")}落空");
+            (reports ??= []).Add($"{name}: 不在场，{(enable ? "启用" : "停用")}落空");
             return false;
         }
 
@@ -193,7 +217,7 @@ public sealed class PluginManagerHost
                     scope.Open();
                 }
 
-                _report($"{name}: {(enable ? "启用" : "停用")}被拒绝 —— {result.Reason ?? "未给原因"}");
+                (reports ??= []).Add($"{name}: {(enable ? "启用" : "停用")}被拒绝 —— {result.Reason ?? "未给原因"}");
                 return false;
             }
 
@@ -206,8 +230,8 @@ public sealed class PluginManagerHost
         }
         catch (Exception ex)
         {
-            _report($"{name}: {(enable ? "启用" : "停用")}钩子抛出 —— {ex.Demystify()}");
-            ReportFault(name, $"{(enable ? "启用" : "停用")}钩子抛出");
+            (reports ??= []).Add($"{name}: {(enable ? "启用" : "停用")}钩子抛出 —— {ex.Demystify()}");
+            fault = $"{(enable ? "启用" : "停用")}钩子抛出";
             return false;
         }
     }

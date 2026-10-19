@@ -348,6 +348,41 @@ checks.Add((
     $"timedOut={probeTimedOut} loaded=[{string.Join(", ", probeHost.LoadedNames)}]"
 ));
 
+// A44：Enable/Disable 的异常路径同样必须先把 _gate 让出来再回调。
+// Faulty 的 OnEnable 抛异常；报告回调里让另一个线程去 Load，超时即说明外层锁没放。
+PluginManagerHost? enableHost = null;
+var enableProbeTimedOut = false;
+var enableProbeStarted = false;
+enableHost = new PluginManagerHost(
+    pluginsRoot,
+    Path.Combine(stage, "enable", "data"),
+    Path.Combine(stage, "enable", "config"),
+    entry =>
+    {
+        if (!entry.Contains("钩子抛出") || enableProbeStarted)
+        {
+            return;
+        }
+
+        enableProbeStarted = true;
+        var loader = new Thread(() => enableHost!.Load(probePackage)) { IsBackground = true };
+        loader.Start();
+        if (!loader.Join(TimeSpan.FromSeconds(5)))
+        {
+            enableProbeTimedOut = true;
+        }
+    });
+enableHost.AddProvider(new GuardedPluginProvider());
+enableHost.Load(Path.Combine(stage, "parented", "Faulty"));
+var faultyEnabled = enableHost.Enable("Faulty");
+checks.Add((
+    "A44 启停异常先放锁再回调",
+    !faultyEnabled && !enableProbeTimedOut
+        && !enableHost.LoadedNames.Contains("Faulty")
+        && enableHost.LoadedNames.Contains("Probe"),
+    $"enabled={faultyEnabled} timedOut={enableProbeTimedOut} loaded=[{string.Join(", ", enableHost.LoadedNames)}]"
+));
+
 // A17：Provider 在装载时抛出 —— 如实把**完整异常**报出来，且这一个插件没装上（ADR-0009）
 var thrown = reported.FirstOrDefault(entry => entry.Contains(ThrowingPluginProvider.ThrowMessage));
 var thrownFull = thrown is not null && thrown.Contains(nameof(InvalidOperationException));
