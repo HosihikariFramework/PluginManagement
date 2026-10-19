@@ -418,6 +418,25 @@ checks.Add((
         + $"reenabled={raceReenabled} loaded=[{string.Join(", ", raceHost.LoadedNames)}]"
 ));
 
+// A46：上下文被外部保留时，故障卸载仍要能回收 ALC。
+// 上下文只带名字与装载编号；带上槽位、实例或委托，外部的这一份引用就会钉住整个 ALC。
+var retainedPacked = Packager.Pack(
+    OutputDirectory("Retained"),
+    Path.Combine(repoRoot, "test", "Retained", "manifest.json"),
+    Path.Combine(stage, "parented"),
+    sharedLayer);
+var retainedLoaded = retainedPacked.PackageDirectory is { } retainedPackage && host.Load(retainedPackage);
+var retainedFaulted = !host.Enable("Retained");
+var retainedRemoved = removed.Any(name => name == "Retained");
+var retainedFailure = reported.LastOrDefault(entry => entry.Contains("Retained") && entry.Contains("没完成"));
+ContextSink.Held = null;
+checks.Add((
+    "A46 外部保留上下文仍能回收 ALC",
+    retainedLoaded && retainedFaulted && retainedRemoved && retainedFailure is null,
+    $"packed={retainedPacked.Succeeded} loaded={retainedLoaded} faulted={retainedFaulted} "
+        + $"removed={retainedRemoved} failure={retainedFailure ?? "无"}"
+));
+
 // A17：Provider 在装载时抛出 —— 如实把**完整异常**报出来，且这一个插件没装上（ADR-0009）
 var thrown = reported.FirstOrDefault(entry => entry.Contains(ThrowingPluginProvider.ThrowMessage));
 var thrownFull = thrown is not null && thrown.Contains(nameof(InvalidOperationException));

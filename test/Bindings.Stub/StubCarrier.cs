@@ -13,3 +13,12 @@ public sealed class StubCarrier(string name) : ICarrierInfo
 {
     public string Describe() => $"stub-carrier:{name}";
 }
+
+/// <summary>
+/// 检验用：插件把上下文留在这里，模拟外部世界在卸载后仍攥着它。
+/// 上下文少带一件插件侧的东西，插件 ALC 就多一个回收不了的根。
+/// </summary>
+public static class ContextSink
+{
+    public static object? Held { get; set; }
+}

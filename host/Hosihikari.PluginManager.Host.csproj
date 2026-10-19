@@ -20,6 +20,7 @@
     <ProjectReference Include="../test/Foo/Foo.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../test/Bar/Bar.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../test/NativeProbe/NativeProbe.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../test/Retained/Retained.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

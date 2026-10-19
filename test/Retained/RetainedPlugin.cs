@@ -1,0 +1,23 @@
+using Hosihikari;
+using Hosihikari.Bindings;
+
+[assembly: EntryPoint<Retained.RetainedPlugin>]
+
+namespace Retained;
+
+/// <summary>
+/// 把上下文交到共享层，模拟父级或 Provider 在卸载后仍留着它。
+/// 启用抛出让框架走故障卸载；随后 ALC 能不能回收，取决于上下文有没有间接攥住实例。
+/// </summary>
+public sealed class RetainedPlugin : IPlugin
+{
+    public void OnLoad(IPluginContext context) => ContextSink.Held = context;
+
+    public PluginHookResult OnEnable() => throw new InvalidOperationException("故意在启用时抛出");
+
+    public PluginHookResult OnDisable() => PluginHookResult.Allow();
+
+    public void OnUnload()
+    {
+    }
+}
