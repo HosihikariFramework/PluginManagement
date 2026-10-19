@@ -14,6 +14,9 @@ public sealed class GuardedPluginProvider : IPluginProvider
     /// <summary>为真时 <c>Guarded</c> 的停用返回拒绝。</summary>
     public bool RefuseDisable { get; set; }
 
+    /// <summary>为真时 <c>Faulty</c> 的启用抛出；置假可让同名重载后的实例健康启用。</summary>
+    public bool ThrowOnEnable { get; set; } = true;
+
     public string Type => "guarded";
 
     public bool CanLoad(PluginManifest manifest) => manifest.Provider == Type;
@@ -41,7 +44,7 @@ public sealed class GuardedPluginProvider : IPluginProvider
 
         public PluginHookResult OnEnable()
         {
-            if (name == "Faulty")
+            if (name == "Faulty" && provider.ThrowOnEnable)
             {
                 throw new InvalidOperationException("故意在启用时抛出");
             }

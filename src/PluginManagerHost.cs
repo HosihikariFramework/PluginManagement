@@ -147,17 +147,18 @@ public sealed class PluginManagerHost
     public bool Enable(string name)
     {
         List<string>? reports = null;
+        Slot? faulted = null;
         string? fault = null;
         bool result;
         lock (_gate)
         {
-            result = DriveHook(name, enable: true, ref reports, out fault);
+            result = DriveHook(name, enable: true, ref reports, out faulted, out fault);
         }
 
         ReportAll(reports);
-        if (fault is not null)
+        if (faulted is not null)
         {
-            ReportFault(name, fault);
+            ReportFault(faulted, fault!);
         }
 
         return result;
@@ -170,25 +171,32 @@ public sealed class PluginManagerHost
     public bool Disable(string name)
     {
         List<string>? reports = null;
+        Slot? faulted = null;
         string? fault = null;
         bool result;
         lock (_gate)
         {
-            result = DriveHook(name, enable: false, ref reports, out fault);
+            result = DriveHook(name, enable: false, ref reports, out faulted, out fault);
         }
 
         ReportAll(reports);
-        if (fault is not null)
+        if (faulted is not null)
         {
-            ReportFault(name, fault);
+            ReportFault(faulted, fault!);
         }
 
         return result;
     }
 
-    private bool DriveHook(string name, bool enable, ref List<string>? reports, out string? fault)
+    private bool DriveHook(
+        string name,
+        bool enable,
+        ref List<string>? reports,
+        out Slot? faulted,
+        out string? fault)
     {
         fault = null;
+        faulted = null;
 
         // 已放下、待回收的不算在场 —— 它已经不在跑了，钩子无处可调。
         if (!_slots.TryGetValue(name, out var slot) || slot.State != PluginState.Loaded)
@@ -231,6 +239,7 @@ public sealed class PluginManagerHost
         catch (Exception ex)
         {
             (reports ??= []).Add($"{name}: {(enable ? "启用" : "停用")}钩子抛出 —— {ex.Demystify()}");
+            faulted = slot;
             fault = $"{(enable ? "启用" : "停用")}钩子抛出";
             return false;
         }
@@ -313,15 +322,20 @@ public sealed class PluginManagerHost
     /// <summary>
     /// 故障：钩子抛出，或 Provider 在钩子之外发现插件死了（ADR-0030）。
     /// 由宿主发起卸载；成功后才通知载体摘账。
+    /// 故障只属于发起它的那个实例：报告在锁外发，期间同名插件可能已经重新装载，
+    /// 按名字找会把健康的新实例连坐卸掉。所以这里认的是那一格本身。
     /// </summary>
-    internal void ReportFault(string name, string reason)
+    private void ReportFault(Slot slot, string reason)
     {
+        var name = slot.Manifest.Name;
         List<string>? reports = null;
         UnloadResult result;
         var present = false;
         lock (_gate)
         {
-            if (_slots.TryGetValue(name, out var slot) && slot.State == PluginState.Loaded)
+            if (_slots.TryGetValue(name, out var current)
+                && ReferenceEquals(current, slot)
+                && slot.State == PluginState.Loaded)
             {
                 present = true;
                 (reports ??= []).Add($"{name}: 故障 —— {reason}");
@@ -431,6 +445,8 @@ public sealed class PluginManagerHost
     {
         var manifest = package.Manifest;
         var scope = new PluginScope(_events, _scheduler, _registry);
+        // 先建这一格，让上下文报告故障时认的是本次装载，而不是后面可能顶替它的同名实例。
+        var slot = new Slot(manifest);
         PluginInstance? instance = null;
         var loadStarted = false;
         var enableStarted = false;
@@ -454,7 +470,8 @@ public sealed class PluginManagerHost
                 BuildConfiguration(manifest.Name, package.Directory),
                 scope,
                 _services ?? PluginContext.Empty,
-                this);
+                this,
+                reason => ReportFault(slot, reason));
 
             instance = provider.Load(manifest, package.Directory, context);
             if (instance is null)
@@ -479,7 +496,9 @@ public sealed class PluginManagerHost
                 }
             }
 
-            _slots[manifest.Name] = new Slot(manifest) { Instance = instance, Scope = scope };
+            slot.Instance = instance;
+            slot.Scope = scope;
+            _slots[manifest.Name] = slot;
             loaded = true;
             return true;
         }
@@ -561,7 +580,8 @@ internal sealed class PluginContext(
     IConfiguration configuration,
     PluginScope scope,
     IServiceProvider services,
-    PluginManagerHost host) : IPluginContext
+    PluginManagerHost host,
+    Action<string> reportFault) : IPluginContext
 {
     internal static readonly IServiceProvider Empty = new EmptyServices();
 
@@ -584,7 +604,7 @@ internal sealed class PluginContext(
     public IServiceProvider Services => services;
 
     /// <summary>Provider 在钩子之外发现插件死了时走这里（ADR-0030）。</summary>
-    public void ReportFault(string reason) => host.ReportFault(name, reason);
+    public void ReportFault(string reason) => reportFault(reason);
 
     /// <summary>Provider 是个插件包，装载时用这个把自己交出去（ADR-0002）。</summary>
     public void RegisterProvider(IPluginProvider provider) => host.AddProvider(provider);

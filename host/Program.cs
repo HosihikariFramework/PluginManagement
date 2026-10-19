@@ -383,6 +383,41 @@ checks.Add((
     $"enabled={faultyEnabled} timedOut={enableProbeTimedOut} loaded=[{string.Join(", ", enableHost.LoadedNames)}]"
 ));
 
+// A45：故障属于抛出的那个实例。报告在锁外，期间同名插件可能已经重载 ——
+// 随后按名字报故障就会把健康的新实例卸掉。这里在报告回调里完成同名重载，
+// 返回后新实例必须仍在场，并且能正常启用。
+PluginManagerHost? raceHost = null;
+var raceProvider = new GuardedPluginProvider();
+var raceReloaded = false;
+raceHost = new PluginManagerHost(
+    pluginsRoot,
+    Path.Combine(stage, "race", "data"),
+    Path.Combine(stage, "race", "config"),
+    entry =>
+    {
+        if (!entry.Contains("钩子抛出") || raceReloaded)
+        {
+            return;
+        }
+
+        raceReloaded = true;
+        raceHost!.Unload("Faulty");
+        raceProvider.ThrowOnEnable = false;
+        raceHost.Load(Path.Combine(stage, "parented", "Faulty"));
+    });
+raceHost.AddProvider(raceProvider);
+raceHost.Load(Path.Combine(stage, "parented", "Faulty"));
+var raceFaulted = raceHost.Enable("Faulty");
+var raceSurvived = raceHost.LoadedNames.Contains("Faulty");
+var raceReenabled = raceHost.Enable("Faulty");
+checks.Add((
+    "A45 故障不卸载同名新实例",
+    !raceFaulted && raceReloaded && raceSurvived && raceReenabled
+        && raceHost.LoadedNames.Contains("Faulty"),
+    $"faulted={raceFaulted} reloaded={raceReloaded} survived={raceSurvived} "
+        + $"reenabled={raceReenabled} loaded=[{string.Join(", ", raceHost.LoadedNames)}]"
+));
+
 // A17：Provider 在装载时抛出 —— 如实把**完整异常**报出来，且这一个插件没装上（ADR-0009）
 var thrown = reported.FirstOrDefault(entry => entry.Contains(ThrowingPluginProvider.ThrowMessage));
 var thrownFull = thrown is not null && thrown.Contains(nameof(InvalidOperationException));
