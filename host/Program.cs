@@ -538,7 +538,7 @@ checks.Add(("A2 插件包内无共享层副本", copies.Length == 0, copies.Leng
 
 // 从链条末端往回卸：Lua 在前、Foo 在后。反序是依赖图的另一半承诺（ADR-0004）。
 var lua = host.Unload("Lua");
-checks.Add(("   链条末端的脚本插件可卸", lua.Released, lua.Error ?? "已回收"));
+checks.Add(("   链条末端的源码插件可卸", lua.Released, lua.Error ?? "已回收"));
 
 // A3：卸载后真回收，而不是"停用就算卸了"（ADR-0004）
 var bar = host.Unload("Bar");
