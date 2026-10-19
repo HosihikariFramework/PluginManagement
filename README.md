@@ -37,6 +37,8 @@ The projects under `src/` and `test/` pick between two references automatically,
 whether the sibling checkout exists:
 
 - **Both repositories side by side** → `ProjectReference`. Changing the contract needs no repack.
+
+The RID-first native library probe uses the McMaster fork; check that out as a sibling too (CI does).
 - **This repository alone** (CI, and any external consumer) → `PackageReference`, pinned to an exact
   version.
 
