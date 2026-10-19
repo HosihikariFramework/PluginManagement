@@ -2,6 +2,7 @@ namespace Hosihikari.PluginManagement;
 
 /// <summary>
 /// 交给单个插件的宿主服务作用域。插件忘了退订的订阅、忘了释放的定时器，由它在卸载时一并收回。
+/// 启用闸门（ADR-0035）：未启用或停用时，事件与定时器回调不再交给插件；订阅本身保留到卸载。
 ///
 /// 不收回的后果是实测出来的：挂在一个<em>共享</em>总线上的 handler 会把插件的 ALC 钉死，
 /// 卸载验证永远过不去 —— 而且订阅当时毫无异样，只有卸载时才暴露（ADR-0004）。
@@ -13,15 +14,37 @@ internal sealed class PluginScope(IEventBus events, IScheduler scheduler, Plugin
     private readonly Lock _gate = new();
     private readonly HashSet<Handle> _owned = [];
     private readonly List<Type> _registered = [];
+    private volatile bool _enabled;
     private bool _released;
 
-    public IDisposable Subscribe<TEvent>(Action<TEvent> handler) => Track(() => events.Subscribe(handler));
+    public IDisposable Subscribe<TEvent>(Action<TEvent> handler) =>
+        Track(() => events.Subscribe<TEvent>(@event =>
+        {
+            if (_enabled)
+            {
+                handler(@event);
+            }
+        }));
 
     public void Publish<TEvent>(TEvent @event) => events.Publish(@event);
 
-    public IDisposable RunLater(TimeSpan delay, Action work) => Track(() => scheduler.RunLater(delay, work));
+    public IDisposable RunLater(TimeSpan delay, Action work) =>
+        Track(() => scheduler.RunLater(delay, () =>
+        {
+            if (_enabled)
+            {
+                work();
+            }
+        }));
 
-    public IDisposable RunEvery(TimeSpan interval, Action work) => Track(() => scheduler.RunEvery(interval, work));
+    public IDisposable RunEvery(TimeSpan interval, Action work) =>
+        Track(() => scheduler.RunEvery(interval, () =>
+        {
+            if (_enabled)
+            {
+                work();
+            }
+        }));
 
     public bool Register<T>(T service) where T : class
     {
@@ -40,6 +63,27 @@ internal sealed class PluginScope(IEventBus events, IScheduler scheduler, Plugin
 
     public T? Get<T>() where T : class => registry.Get<T>();
 
+    /// <summary>打开闸门：之后到达的事件与定时器回调才会交给插件（ADR-0035）。</summary>
+    internal void Open()
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_released, this);
+            _enabled = true;
+        }
+    }
+
+    /// <summary>关闭闸门；返回关闭前的状态，拒绝停用时据此恢复。</summary>
+    internal bool Close()
+    {
+        lock (_gate)
+        {
+            var wasEnabled = _enabled;
+            _enabled = false;
+            return wasEnabled;
+        }
+    }
+
     internal void ReleaseAll()
     {
         Handle[] owned;
@@ -51,6 +95,7 @@ internal sealed class PluginScope(IEventBus events, IScheduler scheduler, Plugin
             }
 
             _released = true;
+            _enabled = false;
             owned = [.. _owned];
             _owned.Clear();
             foreach (var type in _registered)

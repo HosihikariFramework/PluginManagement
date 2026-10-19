@@ -120,6 +120,21 @@ checks.Add(("A9 handler 抛出不影响其余 handler", heard == "ping", heard))
 var scheduledFile = Path.Combine(dataRoot, "Foo", "scheduled.txt");
 checks.Add(("A10 调度器的一次性任务执行", File.Exists(scheduledFile), File.Exists(scheduledFile) ? "已执行" : "没跑"));
 
+// A40：停用关闭作用域闸门，事件不再投递；启用后恢复（ADR-0035）
+var fooDisabled = host.Disable("Foo");
+host.Events.Publish("after-disable");
+Thread.Sleep(100);
+var heardWhileDisabled = File.Exists(heardFile) ? File.ReadAllText(heardFile) : "（没收到）";
+var fooEnabled = host.Enable("Foo");
+host.Events.Publish("after-enable");
+Thread.Sleep(100);
+var heardAfterEnable = File.Exists(heardFile) ? File.ReadAllText(heardFile) : "（没收到）";
+checks.Add((
+    "A40 停用后不再回调，启用后恢复",
+    fooDisabled && fooEnabled && heardWhileDisabled == "ping" && heardAfterEnable == "after-enable",
+    $"disabled={fooDisabled} while={heardWhileDisabled} enabled={fooEnabled} after={heardAfterEnable}"
+));
+
 // A16：普通依赖（非契约、不在共享层）按 ALC 各一份 —— 这正是可卸载性的代价，
 // 也是"插件之间不共享类型"的另一面（ADR-0026）。
 var fooLib = File.ReadAllText(Path.Combine(dataRoot, "Foo", "lib.txt"));
@@ -280,6 +295,8 @@ checks.Add((
 
 // A32：Provider 在钩子之外报告的故障走同一条路径（ADR-0030）
 var vanishingLoaded = host.Load(Path.Combine(stage, "parented", "Vanishing"));
+// 先启用：闸门关闭时定时器不会跑（ADR-0035）。
+host.Enable("Vanishing");
 Thread.Sleep(150);
 checks.Add((
     "A32 钩子之外的故障也卸载并通知",

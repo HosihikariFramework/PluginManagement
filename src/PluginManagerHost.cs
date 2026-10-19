@@ -141,7 +141,8 @@ public sealed class PluginManagerHost
     }
 
     /// <summary>
-    /// 启用一个在场的插件（ADR-0003：父级能单独启停子插件）。启停状态由父级维护，这里只把钩子调到。
+    /// 启用一个在场的插件（ADR-0003：父级能单独启停子插件）。父级决定启停，
+    /// 框架只把钩子调到并开关作用域闸门（ADR-0035）。
     /// </summary>
     public bool Enable(string name)
     {
@@ -152,8 +153,8 @@ public sealed class PluginManagerHost
     }
 
     /// <summary>
-    /// 停用一个在场的插件。框架不额外做什么：作用域里的订阅与定时器在**卸载**时才收回，
-    /// 停用只是让插件停止接活（ADR-0020 的默认全起之下，这是父级的手动动作）。
+    /// 停用一个在场的插件：先关闭它的作用域闸门，再调 <see cref="IPlugin.OnDisable"/>；
+    /// 拒绝时重开（ADR-0035）。订阅与定时器仍保留到**卸载**时才收回。
     /// </summary>
     public bool Disable(string name)
     {
@@ -172,6 +173,14 @@ public sealed class PluginManagerHost
             return false;
         }
 
+        // 停用先关闸门：OnDisable 执行期间与返回之后都不再开始新的投递；拒绝时恢复。
+        var scope = slot.Scope!;
+        var wasEnabled = false;
+        if (!enable)
+        {
+            wasEnabled = scope.Close();
+        }
+
         try
         {
             var result = enable
@@ -179,8 +188,18 @@ public sealed class PluginManagerHost
                 : slot.Instance!.Plugin.OnDisable();
             if (!result.Allowed)
             {
+                if (!enable && wasEnabled)
+                {
+                    scope.Open();
+                }
+
                 _report($"{name}: {(enable ? "启用" : "停用")}被拒绝 —— {result.Reason ?? "未给原因"}");
                 return false;
+            }
+
+            if (enable)
+            {
+                scope.Open();
             }
 
             return true;
@@ -277,12 +296,18 @@ public sealed class PluginManagerHost
     {
         var instance = slot.Instance!;
         var scope = slot.Scope!;
+        var wasEnabled = scope.Close();
 
         try
         {
             var result = instance.Plugin.OnDisable();
             if (!result.Allowed)
             {
+                if (wasEnabled)
+                {
+                    scope.Open();
+                }
+
                 return result.Reason ?? "未给原因";
             }
         }
@@ -382,6 +407,10 @@ public sealed class PluginManagerHost
                 if (!result.Allowed)
                 {
                     _report($"{manifest.Name}: 启用被拒绝 —— {result.Reason ?? "未给原因"}（留在册、未启用）");
+                }
+                else
+                {
+                    scope.Open();
                 }
             }
 
