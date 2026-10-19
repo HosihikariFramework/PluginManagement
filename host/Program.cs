@@ -413,6 +413,10 @@ checks.Add((
     escapingProblem ?? "（未拦下）"
 ));
 
+// A39：本机库按 RID 目录优先解析；卸载只回收托管 ALC（ADR-0034）
+var nativeProbe = RunNativeProbe();
+checks.Add(("A39 本机库 RID 优先且不阻碍回收", nativeProbe.Ok, nativeProbe.Detail));
+
 // A26：清单里声明的第三方包在打包期还原并进包（供应链留在打包那一刻）
 var withPackages = WriteManifest("with-packages", """
     {
@@ -624,6 +628,117 @@ void StageEscapingEntry()
           "extraInfo": { "api": "2", "format_version": "1" }
         }
         """);
+}
+
+// 本机夹具：同一符号在包根与 RID 目录各放一份，只有 RID 那份是 42。RID 优先则插件读到 42。
+(bool Ok, string Detail) RunNativeProbe()
+{
+    var compiler = FindCCompiler();
+    if (compiler is null)
+    {
+        return (true, "（跳过：没有可用的 C 编译器）");
+    }
+
+    var output = OutputDirectory("NativeProbe");
+    var fileName = OperatingSystem.IsWindows() ? "hosihikari_probe.dll"
+        : OperatingSystem.IsMacOS() ? "libhosihikari_probe.dylib"
+        : "libhosihikari_probe.so";
+    var ridDirectory = Path.Combine(
+        output,
+        "runtimes",
+        System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier,
+        "native");
+    Directory.CreateDirectory(ridDirectory);
+    var source = Path.Combine(repoRoot, "test", "NativeProbe", "native", "probe.c");
+    var ridCompile = CompileNative(compiler, source, Path.Combine(ridDirectory, fileName), "42");
+    var rootCompile = CompileNative(compiler, source, Path.Combine(output, fileName), "1");
+    if (!ridCompile.Ok || !rootCompile.Ok)
+    {
+        return (false, $"本机夹具编译失败：{ridCompile.Error} {rootCompile.Error}".Trim());
+    }
+
+    var packed = Packager.Pack(
+        output,
+        Path.Combine(repoRoot, "test", "NativeProbe", "manifest.json"),
+        Path.Combine(stage, "parented"),
+        sharedLayer);
+    if (!packed.Succeeded || packed.PackageDirectory is null)
+    {
+        return (false, "打包失败：" + string.Join("；", packed.Problems));
+    }
+
+    if (!host.Load(packed.PackageDirectory))
+    {
+        return (false, "装载失败：" + (reported.LastOrDefault() ?? "（无报告）"));
+    }
+
+    var valueFile = Path.Combine(dataRoot, "NativeProbe", "native.txt");
+    var value = File.Exists(valueFile) ? File.ReadAllText(valueFile).Trim() : "（没写出来）";
+    var unload = host.Unload("NativeProbe");
+    return (value == "42" && unload.Released, $"value={value} released={unload.Released} {unload.Error}");
+}
+
+static string? FindCCompiler()
+{
+    string[] candidates = OperatingSystem.IsWindows() ? ["clang"] : ["cc", "clang"];
+    foreach (var candidate in candidates)
+    {
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo(candidate)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            start.ArgumentList.Add("--version");
+            using var process = System.Diagnostics.Process.Start(start);
+            if (process is null)
+            {
+                continue;
+            }
+
+            process.StandardOutput.ReadToEnd();
+            process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            if (process.ExitCode == 0)
+            {
+                return candidate;
+            }
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+        }
+    }
+
+    return null;
+}
+
+static (bool Ok, string Error) CompileNative(string compiler, string source, string output, string value)
+{
+    var start = new System.Diagnostics.ProcessStartInfo(compiler)
+    {
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        UseShellExecute = false,
+        CreateNoWindow = true,
+    };
+    start.ArgumentList.Add(OperatingSystem.IsMacOS() ? "-dynamiclib" : "-shared");
+    if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
+    {
+        start.ArgumentList.Add("-fPIC");
+    }
+
+    start.ArgumentList.Add("-o");
+    start.ArgumentList.Add(output);
+    start.ArgumentList.Add($"-DPROBE_VALUE={value}");
+    start.ArgumentList.Add(source);
+    using var process = System.Diagnostics.Process.Start(start)!;
+    var outputText = process.StandardOutput.ReadToEnd();
+    var error = process.StandardError.ReadToEnd();
+    process.WaitForExit();
+    return (process.ExitCode == 0, (outputText + error).Trim());
 }
 
 // 单独一个方法：枚举 AssemblyLoadContext.All 会把枚举到的 ALC 钉在本方法帧上，

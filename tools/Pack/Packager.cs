@@ -76,9 +76,9 @@ public static class Packager
         // 注意它可能是**传递**来的：作者只直接引用契约，而契约又牵进别的共享层程序集时
         // 一样会出现在构建输出里，所以这里对整份输出逐文件比对，不看是谁带进来的。
         var offenders = Directory
-            .EnumerateFiles(sourceDirectory, "*.dll", SearchOption.TopDirectoryOnly)
-            .Select(Path.GetFileName)
-            .Where(file => sharedLayer.Contains(file))
+            .EnumerateFiles(sourceDirectory, "*.dll", SearchOption.AllDirectories)
+            .Select(file => Path.GetRelativePath(sourceDirectory, file))
+            .Where(file => sharedLayer.Contains(Path.GetFileName(file)))
             .ToArray();
         if (offenders.Length > 0)
         {
@@ -113,9 +113,12 @@ public static class Packager
         }
 
         Directory.CreateDirectory(packageDirectory);
-        foreach (var file in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.TopDirectoryOnly))
+        foreach (var file in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories))
         {
-            File.Copy(file, Path.Combine(packageDirectory, Path.GetFileName(file)), overwrite: true);
+            var relative = Path.GetRelativePath(sourceDirectory, file);
+            var target = Path.Combine(packageDirectory, relative);
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target, overwrite: true);
         }
 
         File.Copy(manifestPath, Path.Combine(packageDirectory, "manifest.json"), overwrite: true);
@@ -203,15 +206,24 @@ public static class Packager
             }
 
             // 共享层的程序集不随包走（ADR-0004）；restore 工程自己那份也没有意义。
-            foreach (var file in Directory.EnumerateFiles(output, "*.dll"))
+            // 递归复制是为了保留 runtimes/<rid>/native 的本机资产（ADR-0034）。
+            var restoreArtifacts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "restore.dll", "restore.exe", "restore", "restore.pdb",
+                "restore.deps.json", "restore.runtimeconfig.json",
+            };
+            foreach (var file in Directory.EnumerateFiles(output, "*", SearchOption.AllDirectories))
             {
                 var name = Path.GetFileName(file);
-                if (name == "restore.dll" || sharedLayer.Contains(name))
+                if (restoreArtifacts.Contains(name) || sharedLayer.Contains(name))
                 {
                     continue;
                 }
 
-                File.Copy(file, Path.Combine(packageDirectory, name), overwrite: true);
+                var relative = Path.GetRelativePath(output, file);
+                var target = Path.Combine(packageDirectory, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.Copy(file, target, overwrite: true);
             }
 
             return true;
