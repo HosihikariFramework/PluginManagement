@@ -45,8 +45,8 @@ The RID-first native library probe uses the McMaster fork; check that out as a s
 ## What is not here
 
 - **The Shim** — the native layer that hosts the CLR inside the BDS process — is its own repository.
-- **The out-of-process bridge (the exception)** — RpcProvider is a first-class member and the one
-  exception to the official AOT/ALC set. The core knows the Provider contract and nothing about the child process beyond it.
+- **The out-of-process bridge (exception first-class provider)** — RpcProvider is an official provider;
+  it runs plugins in child processes instead of AOT-compiling source to IL. The core knows the Provider contract and nothing about the child process beyond it.
 - **Any BDS-specific capability** — worlds, entities, commands and game events are outside the
   framework's capability surface.
 
