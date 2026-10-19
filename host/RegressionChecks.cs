@@ -219,10 +219,10 @@ internal static class RegressionChecks
         public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context)
         {
             Context = context;
-            if (manifest.Name == "Broken" && mode is "null" or "provider-throw")
+            if (manifest.Name == "Broken" && _mode is "null" or "provider-throw")
             {
                 UseContext(context);
-                if (mode == "provider-throw") throw new InvalidOperationException("provider failure");
+                if (_mode == "provider-throw") throw new InvalidOperationException("provider failure");
                 return null;
             }
             return new Instance(new Plugin(this, manifest.Name), this);
