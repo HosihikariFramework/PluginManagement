@@ -443,6 +443,24 @@ checks.Add((
     nestedProblem ?? "（未拦下）"
 ));
 
+// A42：清单 name 必须是单个目录名（不能带路径分隔符）
+var badNameManifest = WriteManifest("bad-name", """
+    {
+      "name": "../Evil",
+      "entry": "Lib.dll",
+      "type": "hosihikari",
+      "extraInfo": { "api": "2", "format_version": "1" }
+    }
+    """);
+var badName = Packager.Pack(
+    OutputDirectory("Lib"), badNameManifest, Path.Combine(stage, "bad-name-out"), sharedLayer);
+var badNameProblem = badName.Problems.FirstOrDefault(problem => problem.Contains("name 必须是单个目录名"));
+checks.Add((
+    "A42 打包拒绝带路径的 name",
+    !badName.Succeeded && badNameProblem is not null,
+    badNameProblem ?? "（未拦下）"
+));
+
 // A39：本机库按 RID 目录优先解析；卸载只回收托管 ALC（ADR-0034）
 var nativeProbe = RunNativeProbe();
 checks.Add(("A39 本机库 RID 优先且不阻碍回收", nativeProbe.Ok, nativeProbe.Detail));

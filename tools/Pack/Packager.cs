@@ -50,6 +50,13 @@ public static class Packager
             return new PackResult(false, null, problems);
         }
 
+        // name 直接参与包目录拼装，必须是一个目录名 —— 分隔符、. 与 .. 会跑出输出根。
+        if (manifest.Name is "." or ".." || manifest.Name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            problems.Add($"清单 name 必须是单个目录名：{manifest.Name}");
+            return new PackResult(false, null, problems);
+        }
+
         // 包目录名就是插件名 —— 目录名与清单 name 一致这条由这里保证（ADR-0006）。
         var packageDirectory = Path.Combine(outputRoot, manifest.Name);
 
