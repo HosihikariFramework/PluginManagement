@@ -430,6 +430,19 @@ checks.Add((
     escapingProblem ?? "（未拦下）"
 ));
 
+// A41：输出目录落在构建输出里时拒绝，避免递归复制自我嵌套（ADR-0034）
+var nested = Packager.Pack(
+    OutputDirectory("Lib"),
+    WriteManifest("nested-output", ManifestLike("Lib", "Lib.dll")),
+    Path.Combine(OutputDirectory("Lib"), "pack-out"),
+    sharedLayer);
+var nestedProblem = nested.Problems.FirstOrDefault(problem => problem.Contains("打包输出"));
+checks.Add((
+    "A41 拒绝嵌套的打包输出",
+    !nested.Succeeded && nestedProblem is not null,
+    nestedProblem ?? "（未拦下）"
+));
+
 // A39：本机库按 RID 目录优先解析；卸载只回收托管 ALC（ADR-0034）
 var nativeProbe = RunNativeProbe();
 checks.Add(("A39 本机库 RID 优先且不阻碍回收", nativeProbe.Ok, nativeProbe.Detail));

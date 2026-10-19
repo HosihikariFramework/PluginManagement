@@ -53,6 +53,15 @@ public static class Packager
         // 包目录名就是插件名 —— 目录名与清单 name 一致这条由这里保证（ADR-0006）。
         var packageDirectory = Path.Combine(outputRoot, manifest.Name);
 
+        // 递归复制（ADR-0034）要求输出与构建输出不相交；否则复制会把自己再枚举进来。
+        var sourceRoot = Path.GetFullPath(sourceDirectory);
+        var packageRoot = Path.GetFullPath(packageDirectory);
+        if (IsSameOrUnder(packageRoot, sourceRoot) || IsSameOrUnder(sourceRoot, packageRoot))
+        {
+            problems.Add($"打包输出不能与构建输出相交：{packageRoot} / {sourceRoot}");
+            return new PackResult(false, null, problems);
+        }
+
         // 契约主版本（ADR-0012）。
         if (manifest.Api != PluginContract.ApiVersion)
         {
@@ -283,6 +292,21 @@ public static class Packager
             problems.Add($"读不了 {Path.GetFileName(entryPath)} 的入口声明：{ex.Message}");
             return false;
         }
+    }
+
+    /// <summary>path 等于 root，或落在 root 下面。</summary>
+    private static bool IsSameOrUnder(string path, string root)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        var normalizedPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        var prefix = normalizedRoot.EndsWith(Path.DirectorySeparatorChar)
+            ? normalizedRoot
+            : normalizedRoot + Path.DirectorySeparatorChar;
+        return string.Equals(normalizedPath, normalizedRoot, comparison)
+               || normalizedPath.StartsWith(prefix, comparison);
     }
 
     /// <summary>按名字认，因为在只读元数据里契约是另一套类型对象。</summary>
