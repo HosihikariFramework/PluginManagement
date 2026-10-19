@@ -305,6 +305,49 @@ checks.Add((
     $"removed=[{string.Join(", ", removed)}]"
 ));
 
+// A43：故障报告必须先把 _gate 让出来再回调。父级线程可能正握着日志锁等 _gate，
+// 报告在锁内回调就会互相等死。这里用第二个管理器复现锁序：回调里让另一个线程去 Load，
+// 若 _gate 还攥在报告线程手里，那个 Load 在超时内完不成。
+var probePackage = Path.Combine(stage, "parented", "Probe");
+Directory.CreateDirectory(probePackage);
+File.WriteAllText(Path.Combine(probePackage, "manifest.json"), """
+    {
+      "name": "Probe",
+      "entry": "Probe.dll",
+      "type": "hosihikari",
+      "extraInfo": { "api": "2", "format_version": "1", "provider": "guarded" }
+    }
+    """);
+PluginManagerHost? probeHost = null;
+var probeTimedOut = false;
+probeHost = new PluginManagerHost(
+    pluginsRoot,
+    Path.Combine(stage, "probe", "data"),
+    Path.Combine(stage, "probe", "config"),
+    entry =>
+    {
+        if (!entry.Contains("故障"))
+        {
+            return;
+        }
+
+        var loader = new Thread(() => probeHost!.Load(probePackage)) { IsBackground = true };
+        loader.Start();
+        if (!loader.Join(TimeSpan.FromSeconds(5)))
+        {
+            probeTimedOut = true;
+        }
+    });
+probeHost.AddProvider(new GuardedPluginProvider());
+probeHost.Load(Path.Combine(stage, "parented", "Vanishing"));
+probeHost.Enable("Vanishing");
+Thread.Sleep(200);
+checks.Add((
+    "A43 故障报告先放锁再回调",
+    !probeTimedOut && probeHost.LoadedNames.Contains("Probe"),
+    $"timedOut={probeTimedOut} loaded=[{string.Join(", ", probeHost.LoadedNames)}]"
+));
+
 // A17：Provider 在装载时抛出 —— 如实把**完整异常**报出来，且这一个插件没装上（ADR-0009）
 var thrown = reported.FirstOrDefault(entry => entry.Contains(ThrowingPluginProvider.ThrowMessage));
 var thrownFull = thrown is not null && thrown.Contains(nameof(InvalidOperationException));

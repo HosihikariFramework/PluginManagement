@@ -221,41 +221,68 @@ public sealed class PluginManagerHost
     /// </summary>
     public UnloadResult Unload(string name)
     {
+        List<string>? reports = null;
+        UnloadResult result;
         lock (_gate)
         {
-            if (!_slots.TryGetValue(name, out var slot))
+            result = UnloadLocked(name, ref reports);
+        }
+
+        ReportAll(reports);
+        return result;
+    }
+
+    /// <summary>
+    /// 卸载的加锁部分。报告先攒着，出了锁再发 —— 父级的日志回调可能拿父级自己的锁，
+    /// 而父级线程可能正握着那把锁等 <see cref="_gate"/>；在锁内回调会互相等死。
+    /// </summary>
+    private UnloadResult UnloadLocked(string name, ref List<string>? reports)
+    {
+        if (!_slots.TryGetValue(name, out var slot))
+        {
+            return UnloadResult.Failed($"{name} 未加载");
+        }
+
+        if (slot.State == PluginState.Loaded)
+        {
+            var dependents = _slots.Values
+                .Where(loaded => loaded.State == PluginState.Loaded)
+                .Where(p => p.Manifest.Dependencies.Any(d => d.Name == name))
+                .Select(p => p.Manifest.Name)
+                .ToArray();
+            if (dependents.Length > 0)
             {
-                return UnloadResult.Failed($"{name} 未加载");
+                return UnloadResult.Failed($"仍有依赖者：{string.Join(", ", dependents)}");
             }
 
-            if (slot.State == PluginState.Loaded)
+            var refusal = Detach(slot, ref reports);
+            if (refusal is not null)
             {
-                var dependents = _slots.Values
-                    .Where(loaded => loaded.State == PluginState.Loaded)
-                    .Where(p => p.Manifest.Dependencies.Any(d => d.Name == name))
-                    .Select(p => p.Manifest.Name)
-                    .ToArray();
-                if (dependents.Length > 0)
-                {
-                    return UnloadResult.Failed($"仍有依赖者：{string.Join(", ", dependents)}");
-                }
-
-                var refusal = Detach(slot);
-                if (refusal is not null)
-                {
-                    return UnloadResult.Failed($"{name} 拒绝停用：{refusal}");
-                }
+                return UnloadResult.Failed($"{name} 拒绝停用：{refusal}");
             }
+        }
 
-            // 到这里 slot 里已经没有指向实例与 ALC 的字段了，可以验回收。
-            if (!Collected(slot.Verify!))
-            {
-                // 说"回收"而不是"ALC"：释放句柄长什么样是 Provider 自己的事（ADR-0010）。
-                return UnloadResult.Failed($"{name} 已经放下，但回收验证没通过 —— 再卸载一次会重新验证");
-            }
+        // 到这里 slot 里已经没有指向实例与 ALC 的字段了，可以验回收。
+        if (!Collected(slot.Verify!))
+        {
+            // 说"回收"而不是"ALC"：释放句柄长什么样是 Provider 自己的事（ADR-0010）。
+            return UnloadResult.Failed($"{name} 已经放下，但回收验证没通过 —— 再卸载一次会重新验证");
+        }
 
-            _slots.Remove(name);
-            return UnloadResult.Ok();
+        _slots.Remove(name);
+        return UnloadResult.Ok();
+    }
+
+    private void ReportAll(List<string>? reports)
+    {
+        if (reports is null)
+        {
+            return;
+        }
+
+        foreach (var report in reports)
+        {
+            _report(report);
         }
     }
 
@@ -265,23 +292,37 @@ public sealed class PluginManagerHost
     /// </summary>
     internal void ReportFault(string name, string reason)
     {
+        List<string>? reports = null;
+        UnloadResult result;
+        var present = false;
         lock (_gate)
         {
-            if (!_slots.TryGetValue(name, out var slot) || slot.State != PluginState.Loaded)
+            if (_slots.TryGetValue(name, out var slot) && slot.State == PluginState.Loaded)
             {
-                return;
-            }
-
-            _report($"{name}: 故障 —— {reason}");
-            var result = Unload(name);
-            if (result.Released)
-            {
-                _removed?.Invoke(name);
+                present = true;
+                (reports ??= []).Add($"{name}: 故障 —— {reason}");
+                result = UnloadLocked(name, ref reports);
             }
             else
             {
-                _report($"{name}: 故障卸载没完成 —— {result.Error}");
+                result = UnloadResult.Failed($"{name} 未加载");
             }
+        }
+
+        // 报告与摘账都在锁外：它们会回到父级，而父级的锁可能正被等 _gate 的线程握着。
+        ReportAll(reports);
+        if (!present)
+        {
+            return;
+        }
+
+        if (result.Released)
+        {
+            _removed?.Invoke(name);
+        }
+        else
+        {
+            _report($"{name}: 故障卸载没完成 —— {result.Error}");
         }
     }
 
@@ -292,7 +333,7 @@ public sealed class PluginManagerHost
     /// 停用被拒绝时返回原因，此时什么都不放开（ADR-0030）。
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private string? Detach(Slot slot)
+    private string? Detach(Slot slot, ref List<string>? reports)
     {
         var instance = slot.Instance!;
         var scope = slot.Scope!;
@@ -313,7 +354,7 @@ public sealed class PluginManagerHost
         }
         catch (Exception ex)
         {
-            _report($"{slot.Manifest.Name}: 停用钩子抛出 —— {ex.Demystify()}");
+            (reports ??= []).Add($"{slot.Manifest.Name}: 停用钩子抛出 —— {ex.Demystify()}");
         }
 
         try
@@ -322,7 +363,7 @@ public sealed class PluginManagerHost
         }
         catch (Exception ex)
         {
-            _report($"{slot.Manifest.Name}: 卸载钩子抛出 —— {ex.Demystify()}");
+            (reports ??= []).Add($"{slot.Manifest.Name}: 卸载钩子抛出 —— {ex.Demystify()}");
         }
 
         // 作者没退订的订阅、没释放的定时器，在这里一并收回 —— 否则它们把 ALC 钉在共享服务上。
