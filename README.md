@@ -45,7 +45,7 @@ The RID-first native library probe uses the McMaster fork; check that out as a s
 ## What is not here
 
 - **The Shim** — the native layer that hosts the CLR inside the BDS process — is its own repository.
-- **Scripted plugins** — a Provider of another kind, each VM in its own repository. The core knows
+- **Scripted plugins** — a Provider of another kind, each language runtime in its own repository. The core knows
   the Provider contract and nothing about any script engine.
 - **Any BDS-specific capability** — worlds, entities, commands and game events are outside the
   framework's capability surface.
