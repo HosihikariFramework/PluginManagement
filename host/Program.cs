@@ -50,11 +50,16 @@ StageGuarded("Faulty");
 StageGuarded("Vanishing");
 StageThrowing();
 StageWrongType();
+StageBadFormat();
+StageEscapingEntry();
 
 // 宿主服务用现成的包拼装（ADR-0007）：DI + 日志。载体对象经服务解析交给插件（ADR-0019）。
+// Provider 的可读失败原因走插件日志，所以测试同时收一份。
+var providerLogs = new System.Collections.Concurrent.ConcurrentQueue<string>();
 var collection = new ServiceCollection();
 collection.AddLogging(builder => builder
     .AddSimpleConsole(options => options.SingleLine = true)
+    .AddProvider(new CapturingLoggerProvider(providerLogs))
     .SetMinimumLevel(LogLevel.Information));
 collection.AddSingleton(typeof(ICarrierInfo), new StubCarrier("stub"));
 var services = collection.BuildServiceProvider();
@@ -153,7 +158,25 @@ checks.Add(("A12 打包拒绝共享层副本", !bad.Succeeded && sharedProblem i
 
 // A6：api 不匹配必须被拒载并留下可读报告（ADR-0012）
 var rejected = !host.LoadedNames.Contains("Broken") && reported.Any(entry => entry.Contains("api 不匹配"));
-checks.Add(("A6 api 不匹配时拒载", rejected, reported.LastOrDefault(entry => entry.Contains("api")) ?? "（无报告）"));
+checks.Add(("A6 api 不匹配时拒载", rejected, reported.LastOrDefault(entry => entry.Contains("api 不匹配")) ?? "（无报告）"));
+
+// A33：format_version 不匹配必须被拒载（ADR-0012）
+var formatRefused = !host.LoadedNames.Contains("BadFormat")
+    && reported.Any(entry => entry.Contains("format_version 不匹配"));
+checks.Add((
+    "A33 format_version 不匹配时拒载",
+    formatRefused,
+    reported.LastOrDefault(entry => entry.Contains("format_version")) ?? "（无报告）"
+));
+
+// A34：entry 必须留在包内 —— 绝对路径与 .. 都不能把包外的东西装进插件的 ALC（ADR-0006）
+var escapingRefused = !host.LoadedNames.Contains("Escaping")
+    && reported.Any(entry => entry.Contains("entry 必须是包内相对路径"));
+checks.Add((
+    "A34 entry 出界时拒载",
+    escapingRefused,
+    reported.LastOrDefault(entry => entry.Contains("entry 必须是包内相对路径")) ?? "（无报告）"
+));
 
 // A5：载体绑定程序集也走共享层 —— 转型成功才拿得到，副本会拿到另一种身份（ADR-0019）
 var carrierFile = Path.Combine(dataRoot, "Foo", "carrier.txt");
@@ -322,6 +345,72 @@ checks.Add((
     "A23 打包拒绝没有入口声明的程序集",
     !noEntry.Succeeded && noEntryProblem is not null,
     noEntryProblem ?? "（未拦下）"
+));
+
+// A35：入口程序集没有声明入口时，Provider 报出数量（ADR-0008）
+var noEntryPackage = Path.Combine(stage, "parented", "NoEntry");
+Directory.CreateDirectory(noEntryPackage);
+File.Copy(Path.Combine(OutputDirectory("Lib"), "Lib.dll"), Path.Combine(noEntryPackage, "Lib.dll"), overwrite: true);
+File.WriteAllText(Path.Combine(noEntryPackage, "manifest.json"), """
+    {
+      "name": "NoEntry",
+      "entry": "Lib.dll",
+      "type": "hosihikari",
+      "extraInfo": { "api": "2", "format_version": "1", "provider": "assembly" }
+    }
+    """);
+var noEntryLoaded = host.Load(noEntryPackage);
+checks.Add((
+    "A35 入口程序集没有入口声明时报出数量",
+    !noEntryLoaded && providerLogs.Any(line => line.Contains("声明了 0 个入口")),
+    providerLogs.LastOrDefault(line => line.Contains("个入口")) ?? "（无报告）"
+));
+
+// A36：入口文件不在包里时，Provider 报出路径而不是文件异常（ADR-0008）
+var missingEntryPackage = Path.Combine(stage, "parented", "NoEntryFile");
+Directory.CreateDirectory(missingEntryPackage);
+File.WriteAllText(Path.Combine(missingEntryPackage, "manifest.json"), """
+    {
+      "name": "NoEntryFile",
+      "entry": "Nope.dll",
+      "type": "hosihikari",
+      "extraInfo": { "api": "2", "format_version": "1", "provider": "assembly" }
+    }
+    """);
+var missingEntryLoaded = host.Load(missingEntryPackage);
+checks.Add((
+    "A36 入口文件不在包里时报出路径",
+    !missingEntryLoaded && providerLogs.Any(line => line.Contains("不在包里")),
+    providerLogs.LastOrDefault(line => line.Contains("不在包里")) ?? "（无报告）"
+));
+
+// A37：打包期同样拦 format_version（ADR-0012）
+var badFormatManifest = WriteManifest("bad-format", """
+    {
+      "name": "Foo",
+      "entry": "Foo.dll",
+      "type": "hosihikari",
+      "extraInfo": { "api": "2", "format_version": "9" }
+    }
+    """);
+var badFormat = Packager.Pack(
+    OutputDirectory("Foo"), badFormatManifest, Path.Combine(stage, "bad-format-out"), sharedLayer);
+var badFormatProblem = badFormat.Problems.FirstOrDefault(problem => problem.Contains("format_version"));
+checks.Add((
+    "A37 打包拒绝 format_version 不匹配",
+    !badFormat.Succeeded && badFormatProblem is not null,
+    badFormatProblem ?? "（未拦下）"
+));
+
+// A38：打包期 entry 不能出界（ADR-0006）
+var escapingManifest = WriteManifest("escaping-entry", ManifestLike("Lib", "../Lib.dll"));
+var escaping = Packager.Pack(
+    OutputDirectory("Lib"), escapingManifest, Path.Combine(stage, "escaping-entry-out"), sharedLayer);
+var escapingProblem = escaping.Problems.FirstOrDefault(problem => problem.Contains("包内相对路径"));
+checks.Add((
+    "A38 打包拒绝出界的入口",
+    !escaping.Succeeded && escapingProblem is not null,
+    escapingProblem ?? "（未拦下）"
 ));
 
 // A26：清单里声明的第三方包在打包期还原并进包（供应链留在打包那一刻）
@@ -507,6 +596,36 @@ void StageWrongType()
         """);
 }
 
+// format_version 不匹配的包：与 api 一样，拒载发生在载入之前（ADR-0012）。
+void StageBadFormat()
+{
+    var package = Path.Combine(pluginsRoot, "BadFormat");
+    Directory.CreateDirectory(package);
+    File.WriteAllText(Path.Combine(package, "manifest.json"), """
+        {
+          "name": "BadFormat",
+          "entry": "BadFormat.dll",
+          "type": "hosihikari",
+          "extraInfo": { "api": "2", "format_version": "9" }
+        }
+        """);
+}
+
+// entry 跑出包外的包：绝对路径与 .. 在清单读取时就被拒（ADR-0006）。
+void StageEscapingEntry()
+{
+    var package = Path.Combine(pluginsRoot, "Escaping");
+    Directory.CreateDirectory(package);
+    File.WriteAllText(Path.Combine(package, "manifest.json"), """
+        {
+          "name": "Escaping",
+          "entry": "../Outside.dll",
+          "type": "hosihikari",
+          "extraInfo": { "api": "2", "format_version": "1" }
+        }
+        """);
+}
+
 // 单独一个方法：枚举 AssemblyLoadContext.All 会把枚举到的 ALC 钉在本方法帧上，
 // 留在主流程里会让后面的卸载验证假失败 —— 观察者自己成了根（ADR-0023）。
 [MethodImpl(MethodImplOptions.NoInlining)]
@@ -549,4 +668,27 @@ static string RepoRoot()
     }
 
     return directory?.FullName ?? throw new InvalidOperationException("找不到仓库根");
+}
+
+sealed class CapturingLoggerProvider(System.Collections.Concurrent.ConcurrentQueue<string> lines) : ILoggerProvider
+{
+    public ILogger CreateLogger(string categoryName) => new Logger(lines);
+
+    public void Dispose()
+    {
+    }
+
+    private sealed class Logger(System.Collections.Concurrent.ConcurrentQueue<string> lines) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) => lines.Enqueue(formatter(state, exception));
+    }
 }

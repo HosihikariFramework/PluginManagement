@@ -27,6 +27,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Hosihikari.PluginManager.Host" />
+    <!-- 清单的 entry 出界判断在载入期与打包期共用一份。 -->
+    <InternalsVisibleTo Include="Hosihikari.Plugin.Pack" />
   </ItemGroup>
 
   <!-- 契约来自另一个仓，两种拿法二选一：并列摆放时直接编在一起（改契约不用重新打包），

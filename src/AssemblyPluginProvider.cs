@@ -28,6 +28,11 @@ public sealed class AssemblyPluginProvider(params Assembly[] sharedSources) : IP
     public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context)
     {
         var entryPath = Path.Combine(packageDirectory, manifest.Entry);
+        if (!File.Exists(entryPath))
+        {
+            context.Logger.LogError("{Name}: 入口 {Entry} 不在包里", manifest.Name, manifest.Entry);
+            return null;
+        }
 
         // isUnloadable 是 ADR-0004；PreferSharedTypes + sharedTypes 是让共享层保持同一身份（ADR-0019）。
         var loader = PluginLoader.CreateFromAssemblyFile(
@@ -38,14 +43,24 @@ public sealed class AssemblyPluginProvider(params Assembly[] sharedSources) : IP
 
         // 入口由程序集上的特性声明 —— 怎么找到入口是本 Provider 的事（ADR-0008 / ADR-0010）。
         var assembly = loader.LoadDefaultAssembly();
-        if (assembly.GetCustomAttribute<EntryPointAttributeBase>() is not { } entryPoint)
+        var declared = assembly.GetCustomAttributesData().Count(IsEntryPoint);
+        if (declared != 1)
         {
+            context.Logger.LogError(
+                "{Name}: 入口程序集声明了 {Count} 个入口 —— 需要恰好一个 [assembly: EntryPoint<T>]",
+                manifest.Name,
+                declared);
             loader.Dispose();
             return null;
         }
 
+        var entryPoint = assembly.GetCustomAttribute<EntryPointAttributeBase>()!;
         return new AssemblyPluginInstance(entryPoint.CreateInstance(), loader);
     }
+
+    /// <summary>在已加载的共享层里按类型认入口声明（ADR-0008）。</summary>
+    private static bool IsEntryPoint(CustomAttributeData attribute) =>
+        typeof(EntryPointAttributeBase).IsAssignableFrom(attribute.AttributeType);
 }
 
 internal sealed class AssemblyPluginInstance(IPlugin plugin, PluginLoader loader) : PluginInstance(plugin)

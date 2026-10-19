@@ -59,6 +59,12 @@ public static class Packager
             problems.Add($"清单 api 是 {manifest.Api ?? "未声明"}，当前契约是 {PluginContract.ApiVersion}");
         }
 
+        // 清单 schema 版本（ADR-0012）。
+        if (manifest.FormatVersion != PluginContract.FormatVersion)
+        {
+            problems.Add($"清单 format_version 是 {manifest.FormatVersion ?? "未声明"}，当前是 {PluginContract.FormatVersion}");
+        }
+
         // type 是父级的路由键（ADR-0006）。写错的包在父级态下根本到不了我们手里，
         // 而且失败点离病因很远 —— 所以在这里就拦下。
         if (manifest.Type != PluginContract.ShimModName)
@@ -81,8 +87,14 @@ public static class Packager
                 "引用它们时要 ExcludeAssets=\"runtime\"，否则插件包里是第二个类型身份");
         }
 
+        // 入口必须在包内（ADR-0006）。出界时后面的存在性与入口声明检查都不做 ——
+        // 它们会去读包外的文件。
+        if (!ManifestReader.IsEntryContained(sourceDirectory, manifest.Entry))
+        {
+            problems.Add($"清单 entry 必须是包内相对路径（实际 {manifest.Entry}）");
+        }
         // 入口（ADR-0008）。编译器已经保证它与 IPlugin 和有无参构造是一致的，这里只确认它存在。
-        if (manifest.Provider == "assembly")
+        else if (manifest.Provider == "assembly")
         {
             var entryPath = Path.Combine(sourceDirectory, manifest.Entry);
             if (!File.Exists(entryPath))

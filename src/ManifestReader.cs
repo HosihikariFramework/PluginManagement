@@ -69,6 +69,14 @@ internal static class ManifestReader
                 return null;
             }
 
+            // entry 是包内相对路径（ADR-0006）。绝对路径或 .. 会把包外的文件装进插件的 ALC，
+            // "一个目录就是一个包"随之不成立。
+            if (!IsEntryContained(directory, manifest.Entry))
+            {
+                report($"{folderName}: entry 必须是包内相对路径（实际 {manifest.Entry}）");
+                return null;
+            }
+
             // type 是父级的路由键。写错的包不会被父级交过来，所以在自持态下也一并拦下 ——
             // 否则同一个包换一个拓扑才失败，而那是最难查的一类（ADR-0012）。
             if (manifest.Type != PluginContract.ShimModName)
@@ -84,6 +92,13 @@ internal static class ManifestReader
                 return null;
             }
 
+            // 清单 schema 版本（ADR-0012）：解析器只认这一个版本。
+            if (manifest.FormatVersion != PluginContract.FormatVersion)
+            {
+                report($"{folderName}: format_version 不匹配（清单 {manifest.FormatVersion ?? "未声明"}，框架 {PluginContract.FormatVersion}）");
+                return null;
+            }
+
             return new PluginPackage(manifest, directory);
         }
         catch (JsonException ex)
@@ -95,6 +110,30 @@ internal static class ManifestReader
         {
             report($"{folderName}: 清单读不出来 —— {ex.Message}");
             return null;
+        }
+    }
+
+    /// <summary>entry 必须是包内相对路径：绝对路径与 .. 都出界。</summary>
+    internal static bool IsEntryContained(string packageDirectory, string entry)
+    {
+        try
+        {
+            if (Path.IsPathRooted(entry))
+            {
+                return false;
+            }
+
+            var root = Path.GetFullPath(packageDirectory);
+            var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+            var full = Path.GetFullPath(Path.Combine(root, entry));
+            var comparison = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+            return full.StartsWith(prefix, comparison);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
         }
     }
 }
