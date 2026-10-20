@@ -3,9 +3,11 @@ using Hosihikari.PluginManagement.Pack;
 
 // 用法：
 //   Hosihikari.Plugin.Pack pack-provider <构建输出目录> <清单路径> <输出根目录>
+//   Hosihikari.Plugin.Pack pack-plugin   <构建输出目录> <清单路径> <输出根目录>
 //   Hosihikari.Plugin.Pack <构建输出目录> <清单路径> <输出根目录> [--shared <程序集文件名>]...
-// pack-provider 用核心的共享层清单剔除共享层副本（ADR-0036）；作者打包仍用后半条显式清单。
-if (args.Length == 4 && args[0] == "pack-provider")
+// pack-provider / pack-plugin 都用核心的共享层清单剔除共享层副本（ADR-0036）；
+// 两个名字只是说明调用方，规则只有一份。显式清单那条留给自定义共享层的载体。
+if (args.Length == 4 && (args[0] == "pack-provider" || args[0] == "pack-plugin"))
 {
     return PackProvider(args[1], args[2], args[3]);
 }
@@ -16,6 +18,7 @@ if (args.Length < 3)
 {
     Console.WriteLine("用法:");
     Console.WriteLine("  Hosihikari.Plugin.Pack pack-provider <构建输出目录> <清单路径> <输出根目录>");
+    Console.WriteLine("  Hosihikari.Plugin.Pack pack-plugin   <构建输出目录> <清单路径> <输出根目录>");
     Console.WriteLine("  Hosihikari.Plugin.Pack <构建输出目录> <清单路径> <输出根目录> [--shared <程序集文件名>]...");
     return 2;
 }
