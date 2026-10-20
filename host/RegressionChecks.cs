@@ -301,12 +301,13 @@ internal static class RegressionChecks
     {
         var source = Path.Combine(root, "source");
         Directory.CreateDirectory(source);
+        Directory.CreateDirectory(Path.Combine(source, "parts"));
         File.WriteAllText(Path.Combine(source, "main.cs"), """
-            #:include helper.cs
+            #:include parts/*.cs
             #:package fixture@1.0.0
             public static class Entry { }
             """);
-        File.WriteAllText(Path.Combine(source, "helper.cs"), "public static class Helper { }");
+        File.WriteAllText(Path.Combine(source, "parts", "helper.cs"), "public static class Helper { }");
         var manifest = Path.Combine(root, "manifest.json");
         File.WriteAllText(manifest, JsonSerializer.Serialize(new
         {
@@ -316,7 +317,7 @@ internal static class RegressionChecks
         var result = Packager.Pack(source, manifest, Path.Combine(root, "packages"), []);
         return result.Succeeded
                && result.PackageDirectory is { } package
-               && File.Exists(Path.Combine(package, "helper.cs"))
+               && File.Exists(Path.Combine(package, "parts", "helper.cs"))
             ? 0
             : 1;
     }

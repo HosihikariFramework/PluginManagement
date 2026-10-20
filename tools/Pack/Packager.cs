@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Hosihikari;
 
 namespace Hosihikari.PluginManagement.Pack;
@@ -295,13 +296,34 @@ public static class Packager
                     {
                         problems.Add($"{path}: #:include 缺少路径");
                     }
-                    else if (include.IndexOfAny(['*', '?']) >= 0)
-                    {
-                        problems.Add($"{path}: #:include 暂不支持通配符：{include}");
-                    }
                     else
                     {
-                        Visit(Path.Combine(Path.GetDirectoryName(path)!, include));
+                        var baseDirectory = Path.GetDirectoryName(path) ?? "";
+                        if (include.IndexOfAny(['*', '?']) >= 0)
+                        {
+                            var fullBase = Path.Combine(root, baseDirectory);
+                            if (!Directory.Exists(fullBase))
+                            {
+                                problems.Add($"{path}: #:include 的目录不存在：{include}");
+                                continue;
+                            }
+
+                            var matches = ExpandGlob(fullBase, include);
+                            if (matches.Length == 0)
+                            {
+                                problems.Add($"{path}: #:include 没有匹配到文件：{include}");
+                                continue;
+                            }
+
+                            foreach (var match in matches)
+                            {
+                                Visit(match);
+                            }
+                        }
+                        else
+                        {
+                            Visit(Path.Combine(baseDirectory, include));
+                        }
                     }
                 }
             }
@@ -322,6 +344,57 @@ public static class Packager
     private static bool IsDirective(string line, string directive) =>
         line.StartsWith(directive, StringComparison.Ordinal)
         && (line.Length == directive.Length || char.IsWhiteSpace(line[directive.Length]));
+
+    private static string[] ExpandGlob(string baseDirectory, string pattern)
+    {
+        var normalized = pattern.Replace('\\', '/');
+        var regex = new Regex(GlobToRegex(normalized), RegexOptions.CultureInvariant);
+        return Directory
+            .EnumerateFiles(baseDirectory, "*", SearchOption.AllDirectories)
+            .Where(file => file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .Where(file => regex.IsMatch(Path.GetRelativePath(baseDirectory, file).Replace('\\', '/')))
+            .OrderBy(file => file, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static string GlobToRegex(string pattern)
+    {
+        var builder = new System.Text.StringBuilder("^");
+        for (var index = 0; index < pattern.Length; index++)
+        {
+            var character = pattern[index];
+            if (character == '*')
+            {
+                if (index + 1 < pattern.Length && pattern[index + 1] == '*')
+                {
+                    index++;
+                    if (index + 1 < pattern.Length && pattern[index + 1] == '/')
+                    {
+                        index++;
+                        builder.Append("(?:.*/)?");
+                    }
+                    else
+                    {
+                        builder.Append(".*");
+                    }
+                }
+                else
+                {
+                    builder.Append("[^/]*");
+                }
+            }
+            else if (character == '?')
+            {
+                builder.Append("[^/]");
+            }
+            else
+            {
+                builder.Append(Regex.Escape(character.ToString()));
+            }
+        }
+
+        return builder.Append('$').ToString();
+    }
 
     /// <summary>
     /// 按已收集的 <c>Id/Version</c> 还原第三方包，把它们的 dll 放进包里。
