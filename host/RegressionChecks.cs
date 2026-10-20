@@ -14,7 +14,7 @@ internal static class RegressionChecks
 {
     internal static IEnumerable<(string Name, bool Passed, string Detail)> Run(string root)
     {
-        foreach (var mode in new[] { "load", "enable", "null", "provider-throw", "cleanup-throw" })
+        foreach (var mode in new[] { "load", "enable", "null", "provider-throw", "cleanup-throw", "fault-on-load" })
         {
             var directory = Path.Combine(root, mode);
             var host = NewHost(directory);
@@ -25,7 +25,7 @@ internal static class RegressionChecks
             host.Events.Publish("after failure");
             var context = provider.Context!;
             var scope = (PluginScope)context.Events;
-            var expectedHooks = mode is "load" or "enable" or "cleanup-throw";
+            var expectedHooks = mode is "load" or "enable" or "cleanup-throw" or "fault-on-load";
             var hooksCleaned = provider.Unloads == (expectedHooks ? 1 : 0)
                                && provider.Disables == (mode == "enable" ? 1 : 0);
             var clean = !loaded && host.LoadedNames.Count == 0 && provider.Events == 0
@@ -103,6 +103,82 @@ internal static class RegressionChecks
 
         yield return ("R7 打包同时消费大量 stdout/stderr", PackOutput(Path.Combine(root, "pack")),
             "受控 publish 进程各输出 2MiB，10 秒内应退出");
+
+        var manifestRoot = Path.Combine(root, "manifest");
+        var manifestHost = NewHost(manifestRoot);
+        manifestHost.AddProvider(new FailingProvider("none"));
+        Stage(manifestRoot, "Good");
+        Stage(manifestRoot, "NullDependencies");
+        StageManifest(manifestRoot, "NullDependencies", """
+            {
+              "name": "NullDependencies", "entry": "main", "type": "hosihikari",
+              "dependencies": null,
+              "extraInfo": { "api": "2", "format_version": "1", "provider": "regression" }
+            }
+            """);
+        StageManifest(manifestRoot, "NullExtra", """
+            {
+              "name": "NullExtra", "entry": "main", "type": "hosihikari",
+              "extraInfo": null
+            }
+            """);
+        StageManifest(manifestRoot, "NullDependencyEntry", """
+            {
+              "name": "NullDependencyEntry", "entry": "main", "type": "hosihikari",
+              "dependencies": [null],
+              "extraInfo": { "api": "2", "format_version": "1", "provider": "regression" }
+            }
+            """);
+        var manifestThrew = false;
+        try { manifestHost.LoadAll(); }
+        catch { manifestThrew = true; }
+        var manifestLoaded = manifestHost.LoadedNames;
+        yield return ("R8 清单 null 字段不中断整轮",
+            !manifestThrew
+            && manifestLoaded.Contains("Good")
+            && !manifestLoaded.Contains("NullExtra")
+            && !manifestLoaded.Contains("NullDependencyEntry"),
+            string.Join(",", manifestLoaded));
+
+        var lockRoot = Path.Combine(root, "load-lock");
+        var parentLock = new object();
+        var secondStarted = new ManualResetEventSlim();
+        var secondRelease = new ManualResetEventSlim();
+        var lockProvider = new FailingProvider("none")
+        {
+            SecondLoadStarted = secondStarted,
+            SecondRelease = secondRelease,
+        };
+        var lockHost = new PluginManagerHost(
+            Path.Combine(lockRoot, "plugins"), Path.Combine(lockRoot, "data"), Path.Combine(lockRoot, "config"),
+            _ => { lock (parentLock) { } });
+        lockHost.AddProvider(lockProvider);
+        Stage(lockRoot, "Probe");
+        Stage(lockRoot, "Second", "Probe");
+        var loadDone = new ManualResetEventSlim();
+        var unloadDone = new ManualResetEventSlim();
+        Exception? loadError = null;
+        var loader = new Thread(() =>
+        {
+            try { lockHost.LoadAll(); }
+            catch (Exception ex) { loadError = ex; }
+            finally { loadDone.Set(); }
+        });
+        var unloader = new Thread(() =>
+        {
+            secondStarted.Wait(TimeSpan.FromSeconds(5));
+            lock (parentLock)
+            {
+                secondRelease.Set();
+                lockHost.Unload("Probe");
+            }
+            unloadDone.Set();
+        });
+        loader.Start();
+        unloader.Start();
+        var bothDone = loadDone.Wait(TimeSpan.FromSeconds(5)) && unloadDone.Wait(TimeSpan.FromSeconds(5));
+        yield return ("R9 加载路径不在锁内回调父级", bothDone && secondStarted.IsSet && loadError is null,
+            $"loaded={string.Join(",", lockHost.LoadedNames)} error={loadError?.Message}");
     }
 
     private static PluginManagerHost NewHost(string root) => new(
@@ -119,6 +195,14 @@ internal static class RegressionChecks
             dependencies = dependency is null ? Array.Empty<object>() : [new { name = dependency }],
             extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "regression" },
         }));
+        return directory;
+    }
+
+    private static string StageManifest(string root, string name, string json)
+    {
+        var directory = Path.Combine(root, "plugins", name);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "manifest.json"), json);
         return directory;
     }
 
@@ -214,11 +298,19 @@ internal static class RegressionChecks
         private readonly string _mode = mode;
         public string Type => "regression";
         public IPluginContext? Context;
+        public ManualResetEventSlim? SecondLoadStarted;
+        public ManualResetEventSlim? SecondRelease;
         public int Events, Unloads, Disables, Releases;
         public bool CanLoad(PluginManifest manifest) => manifest.Provider == Type;
         public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context)
         {
             Context = context;
+            if (manifest.Name == "Second")
+            {
+                SecondLoadStarted?.Set();
+                SecondRelease?.Wait(TimeSpan.FromSeconds(5));
+                return null;
+            }
             if (manifest.Name == "Broken" && _mode is "null" or "provider-throw")
             {
                 UseContext(context);
@@ -244,6 +336,8 @@ internal static class RegressionChecks
                 owner.UseContext(context);
                 if (name == "Broken" && owner._mode is "load" or "cleanup-throw")
                     throw new InvalidOperationException("load failure");
+                if (name == "Broken" && owner._mode == "fault-on-load")
+                    context.ReportFault("immediate death");
             }
             public PluginHookResult OnEnable() => name == "Broken" && owner._mode == "enable"
                 ? throw new InvalidOperationException("enable failure") : PluginHookResult.Allow();

@@ -22,6 +22,8 @@ public sealed class PluginManagerHost
     private readonly IScheduler _scheduler;
     private readonly PluginServiceRegistry _registry = new();
     private readonly Dictionary<string, Slot> _slots = new(StringComparer.Ordinal);
+    private readonly Dictionary<Guid, string> _loading = [];
+    private readonly Dictionary<Guid, string> _pendingFaults = [];
     private readonly List<IPluginProvider> _providers = [];
 
     public PluginManagerHost(
@@ -55,15 +57,30 @@ public sealed class PluginManagerHost
     /// <returns>登记成功为 <c>true</c>；同名的已在则为 <c>false</c>，先来的那个不变。</returns>
     public bool AddProvider(IPluginProvider provider)
     {
+        var added = TryAddProvider(provider, out var problem);
+        if (problem is not null)
+        {
+            _report(problem);
+        }
+
+        return added;
+    }
+
+    /// <summary>
+    /// 不向父级回报的登记。加载路径持锁时走这里，冲突文本交给加载报告统一带出去。
+    /// </summary>
+    internal bool TryAddProvider(IPluginProvider provider, out string? problem)
+    {
         var existing = _providers.FirstOrDefault(registered => registered.Type == provider.Type);
         if (existing is not null)
         {
-            _report($"{provider.Type}: 已经有 {existing.GetType().Name} 处理这个类型，"
-                    + $"{provider.GetType().Name} 被拒 —— 插件类型名必须唯一");
+            problem = $"{provider.Type}: 已经有 {existing.GetType().Name} 处理这个类型，"
+                      + $"{provider.GetType().Name} 被拒 —— 插件类型名必须唯一";
             return false;
         }
 
         _providers.Add(provider);
+        problem = null;
         return true;
     }
 
@@ -87,29 +104,37 @@ public sealed class PluginManagerHost
     /// <summary>自持态：插件包就在 <c>plugins/</c> 下，由我们枚举、按依赖排序后逐个装（ADR-0018）。</summary>
     public void LoadAll()
     {
-        lock (_gate)
+        var reports = new List<string>();
+        try
         {
-            foreach (var package in DependencyGraph.Resolve(ManifestReader.Scan(_pluginsRoot, _report), _report))
+            lock (_gate)
             {
-                if (_slots.ContainsKey(package.Manifest.Name))
+                foreach (var package in DependencyGraph.Resolve(ManifestReader.Scan(_pluginsRoot, reports.Add), reports.Add))
                 {
-                    continue;
-                }
+                    if (_slots.ContainsKey(package.Manifest.Name))
+                    {
+                        continue;
+                    }
 
-                var missing = package.Manifest.Dependencies
-                    .Where(dependency => dependency.Name != PluginContract.ShimModName)
-                    .Where(dependency => !_slots.TryGetValue(dependency.Name, out var slot)
-                                         || slot.State != PluginState.Loaded)
-                    .Select(dependency => dependency.Name)
-                    .ToArray();
-                if (missing.Length > 0)
-                {
-                    _report($"{package.Manifest.Name}: 依赖未加载：{string.Join(", ", missing)}，已跳过");
-                    continue;
-                }
+                    var missing = package.Manifest.Dependencies
+                        .Where(dependency => dependency.Name != PluginContract.ShimModName)
+                        .Where(dependency => !_slots.TryGetValue(dependency.Name, out var slot)
+                                             || slot.State != PluginState.Loaded)
+                        .Select(dependency => dependency.Name)
+                        .ToArray();
+                    if (missing.Length > 0)
+                    {
+                        reports.Add($"{package.Manifest.Name}: 依赖未加载：{string.Join(", ", missing)}，已跳过");
+                        continue;
+                    }
 
-                LoadOne(package, enable: true);
+                    LoadOne(package, enable: true, reports);
+                }
             }
+        }
+        finally
+        {
+            ReportAll(reports);
         }
     }
 
@@ -123,21 +148,32 @@ public sealed class PluginManagerHost
     /// </summary>
     public bool Load(string packageDirectory)
     {
-        lock (_gate)
+        var reports = new List<string>();
+        var result = false;
+        try
         {
-            if (ManifestReader.Read(packageDirectory, _report) is not { } package)
+            lock (_gate)
             {
-                return false;
-            }
+                if (ManifestReader.Read(packageDirectory, reports.Add) is not { } package)
+                {
+                    return false;
+                }
 
-            if (_slots.TryGetValue(package.Manifest.Name, out var slot))
-            {
-                _report($"{package.Manifest.Name}: 已经在册（{slot.State}）");
-                return false;
-            }
+                if (_slots.TryGetValue(package.Manifest.Name, out var slot))
+                {
+                    reports.Add($"{package.Manifest.Name}: 已经在册（{slot.State}）");
+                    return false;
+                }
 
-            return LoadOne(package, enable: false);
+                result = LoadOne(package, enable: false, reports);
+            }
         }
+        finally
+        {
+            ReportAll(reports);
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -341,6 +377,12 @@ public sealed class PluginManagerHost
                 (reports ??= []).Add($"{name}: 故障 —— {reason}");
                 result = UnloadLocked(name, ref reports);
             }
+            else if (_loading.TryGetValue(instanceId, out var loadingName) && loadingName == name)
+            {
+                // 装载钩子还没跑完，实例尚未交给表。记下来，让 LoadOne 在回滚时一并报。
+                _pendingFaults[instanceId] = reason;
+                return;
+            }
             else
             {
                 result = UnloadResult.Failed($"{name} 未加载");
@@ -441,12 +483,13 @@ public sealed class PluginManagerHost
             .AddEnvironmentVariables()
             .Build();
 
-    private bool LoadOne(PluginPackage package, bool enable)
+    private bool LoadOne(PluginPackage package, bool enable, List<string> reports)
     {
         var manifest = package.Manifest;
         var scope = new PluginScope(_events, _scheduler, _registry);
         // 先建这一格，让上下文报告故障时认的是本次装载，而不是后面可能顶替它的同名实例。
         var slot = new Slot(manifest);
+        _loading[slot.Id] = manifest.Name;
         PluginInstance? instance = null;
         var loadStarted = false;
         var enableStarted = false;
@@ -456,7 +499,7 @@ public sealed class PluginManagerHost
             var provider = _providers.FirstOrDefault(p => p.CanLoad(manifest));
             if (provider is null)
             {
-                _report($"{manifest.Name}: 没有能处理 provider={manifest.Provider} 的 Provider");
+                reports.Add($"{manifest.Name}: 没有能处理 provider={manifest.Provider} 的 Provider");
                 return false;
             }
 
@@ -471,29 +514,43 @@ public sealed class PluginManagerHost
                 scope,
                 _services ?? PluginContext.Empty,
                 this,
-                slot.Id);
+                slot.Id,
+                reports.Add);
 
             instance = provider.Load(manifest, package.Directory, context);
             if (instance is null)
             {
-                _report($"{manifest.Name}: 加载失败");
+                reports.Add($"{manifest.Name}: 加载失败");
                 return false;
             }
 
             loadStarted = true;
             instance.Plugin.OnLoad(context);
+            if (_pendingFaults.TryGetValue(slot.Id, out var loadFault))
+            {
+                reports.Add($"{manifest.Name}: 故障 —— {loadFault}");
+                return false;
+            }
+
             if (enable)
             {
                 enableStarted = true;
                 var result = instance.Plugin.OnEnable();
                 if (!result.Allowed)
                 {
-                    _report($"{manifest.Name}: 启用被拒绝 —— {result.Reason ?? "未给原因"}（留在册、未启用）");
+                    reports.Add($"{manifest.Name}: 启用被拒绝 —— {result.Reason ?? "未给原因"}（留在册、未启用）");
                 }
                 else
                 {
                     scope.Open();
                 }
+            }
+
+            // 装载期间同一线程报告的故障会落在这里；实例还没交给表，直接回滚。
+            if (_pendingFaults.TryGetValue(slot.Id, out var pendingFault))
+            {
+                reports.Add($"{manifest.Name}: 故障 —— {pendingFault}");
+                return false;
             }
 
             slot.Instance = instance;
@@ -504,11 +561,13 @@ public sealed class PluginManagerHost
         }
         catch (Exception ex)
         {
-            _report($"{manifest.Name}: 加载抛出，已退回 —— {ex.Demystify()}");
+            reports.Add($"{manifest.Name}: 加载抛出，已退回 —— {ex.Demystify()}");
             return false;
         }
         finally
         {
+            _loading.Remove(slot.Id);
+            _pendingFaults.Remove(slot.Id);
             if (!loaded)
             {
                 if (enableStarted)
@@ -537,7 +596,7 @@ public sealed class PluginManagerHost
             }
             catch (Exception ex)
             {
-                _report($"{manifest.Name}: 加载回滚抛出 —— {ex.Demystify()}");
+                reports.Add($"{manifest.Name}: 加载回滚抛出 —— {ex.Demystify()}");
             }
         }
     }
@@ -584,7 +643,8 @@ internal sealed class PluginContext(
     PluginScope scope,
     IServiceProvider services,
     PluginManagerHost host,
-    Guid instanceId) : IPluginContext
+    Guid instanceId,
+    Action<string> report) : IPluginContext
 {
     internal static readonly IServiceProvider Empty = new EmptyServices();
 
@@ -610,7 +670,13 @@ internal sealed class PluginContext(
     public void ReportFault(string reason) => host.ReportFault(name, instanceId, reason);
 
     /// <summary>Provider 是个插件包，装载时用这个把自己交出去（ADR-0002）。</summary>
-    public void RegisterProvider(IPluginProvider provider) => host.AddProvider(provider);
+    public void RegisterProvider(IPluginProvider provider)
+    {
+        if (!host.TryAddProvider(provider, out var problem) && problem is not null)
+        {
+            report(problem);
+        }
+    }
 
     private sealed class EmptyServices : IServiceProvider
     {

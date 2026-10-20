@@ -99,6 +99,15 @@ internal static class ManifestReader
                 return null;
             }
 
+            // JSON null 会绕过集合初始化；ManifestDependency 也可能被写成 null。
+            // 这里统一拒绝，别让依赖图在后面抛 NRE。
+            if (manifest.Dependencies.Any(dependency =>
+                    dependency is null || string.IsNullOrWhiteSpace(dependency.Name)))
+            {
+                report($"{folderName}: dependencies 里必须有非空的 name");
+                return null;
+            }
+
             return new PluginPackage(manifest, directory);
         }
         catch (JsonException ex)
