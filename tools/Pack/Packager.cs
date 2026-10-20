@@ -51,7 +51,9 @@ public static class Packager
         }
 
         // name 直接参与包目录拼装，必须是一个目录名 —— 分隔符、. 与 .. 会跑出输出根。
-        if (manifest.Name is "." or ".." || manifest.Name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        if (manifest.Name is "." or ".."
+            || manifest.Name.EndsWith('.') || manifest.Name.EndsWith(' ')
+            || manifest.Name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
         {
             problems.Add($"清单 name 必须是单个目录名：{manifest.Name}");
             return new PackResult(false, null, problems);

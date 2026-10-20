@@ -775,16 +775,22 @@ internal sealed class PluginContext(
     public void ReportFault(string reason) => host.ReportFault(name, instanceId, reason);
 
     /// <summary>Provider 是个插件包，装载时用这个把自己交出去（ADR-0002）。</summary>
-    public void RegisterProvider(IPluginProvider provider)
+    public void RegisterProvider(IPluginProvider provider) => TryRegisterProvider(provider);
+
+    public bool TryRegisterProvider(IPluginProvider provider)
     {
-        if (host.TryAddProvider(provider, out var problem))
+        if (!host.TryAddProvider(provider, out var problem))
         {
-            host.MarkProvider(instanceId, provider);
+            if (problem is not null)
+            {
+                report(problem);
+            }
+
+            return false;
         }
-        else if (problem is not null)
-        {
-            report(problem);
-        }
+
+        host.MarkProvider(instanceId, provider);
+        return true;
     }
 
     private sealed class EmptyServices : IServiceProvider
