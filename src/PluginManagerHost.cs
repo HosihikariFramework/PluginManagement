@@ -302,6 +302,37 @@ public sealed class PluginManagerHost
     }
 
     /// <summary>
+    /// 载体重载前的整批回收：先从依赖者往依赖卸，再清掉 Provider 登记。
+    /// 这个 host 之后不再使用；失败项由调用方决定是否丢弃。
+    /// </summary>
+    internal void UnloadAll()
+    {
+        List<string>? reports = [];
+        try
+        {
+            lock (_gate)
+            {
+                foreach (var name in _slots.Keys.Reverse().ToArray())
+                {
+                    var result = UnloadLocked(name, ref reports);
+                    var error = result.Error;
+                    if (!result.Released && error is not null)
+                    {
+                        reports?.Add($"{name}: {error}");
+                    }
+                }
+
+                // Provider 对象可能属于正要回收的插件 ALC；不清掉它们，ALC 永远验不过。
+                _providers.Clear();
+            }
+        }
+        finally
+        {
+            ReportAll(reports);
+        }
+    }
+
+    /// <summary>
     /// 卸载的加锁部分。报告先攒着，出了锁再发 —— 父级的日志回调可能拿父级自己的锁，
     /// 而父级线程可能正握着那把锁等 <see cref="_gate"/>；在锁内回调会互相等死。
     /// </summary>

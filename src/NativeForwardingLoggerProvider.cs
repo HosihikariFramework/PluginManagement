@@ -13,13 +13,23 @@ namespace Hosihikari.PluginManagement;
 /// </summary>
 internal sealed unsafe class NativeForwardingLoggerProvider(IntPtr callback, IntPtr user) : ILoggerProvider
 {
-    public ILogger CreateLogger(string categoryName) => new Logger(categoryName, callback, user);
+    private static long s_generation;
+
+    /// <summary>
+    /// 旧原生日志器要被卸载时推进代次；旧 logger 捕获的代次不再相等，后续日志直接丢弃，
+    /// 不会跳进已经解除映射的父级回调。
+    /// </summary>
+    internal static void AdvanceGeneration() => Interlocked.Increment(ref s_generation);
+
+    private readonly long _generation = Volatile.Read(ref s_generation);
+
+    public ILogger CreateLogger(string categoryName) => new Logger(categoryName, callback, user, _generation);
 
     public void Dispose()
     {
     }
 
-    private sealed class Logger(string category, IntPtr callback, IntPtr user) : ILogger
+    private sealed class Logger(string category, IntPtr callback, IntPtr user, long generation) : ILogger
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -32,7 +42,7 @@ internal sealed unsafe class NativeForwardingLoggerProvider(IntPtr callback, Int
             Exception? error,
             Func<TState, Exception?, string> formatter)
         {
-            if (!IsEnabled(logLevel))
+            if (!IsEnabled(logLevel) || generation != Volatile.Read(ref s_generation))
             {
                 return;
             }

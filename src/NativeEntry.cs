@@ -81,6 +81,52 @@ public static class NativeEntry
     public static int StartUnderParent(IntPtr arg, int argSizeInBytes) => StartCore(scanPlugins: false);
 
     /// <summary>
+    /// 父级要重载自己（Endstone 的 <c>/reload</c>）：把子插件全部收回，丢掉旧 host。
+    /// CLR 与 Shim 模块继续活着，下一次 <c>StartUnderParent</c> 建一个新的 host。
+    /// </summary>
+    [UnmanagedCallersOnly]
+    public static int StopUnderParent(IntPtr arg, int argSizeInBytes) => StopCore();
+
+    private static int StopCore()
+    {
+        var logger = s_loggerFactory?.CreateLogger("Hosihikari");
+        try
+        {
+            var host = s_host;
+            if (host is null)
+            {
+                return 0;
+            }
+
+            host.UnloadAll();
+            for (var i = 0; i < 10; i++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+
+            // Provider 已清掉；再给暂时钉住 ALC 的插件一次验证机会。
+            host.UnloadAll();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "重载前回收核心失败");
+            return 1;
+        }
+        finally
+        {
+            // 旧 logger 捕获的是即将卸载的父级回调；推进代次后它们只剩空操作。
+            NativeForwardingLoggerProvider.AdvanceGeneration();
+            s_logCallback = IntPtr.Zero;
+            s_logUser = IntPtr.Zero;
+            s_removalCallback = IntPtr.Zero;
+            s_removalUser = IntPtr.Zero;
+            s_host = null;
+        }
+    }
+
+    /// <summary>
     /// 父级交付一个插件包：参数是包目录的、以 null 结尾的 UTF-8 指针（ADR-0003）。
     /// 返回 0 表示装上了，非 0 表示没装上 —— 原因已经进了父级的日志。
     /// </summary>
@@ -208,6 +254,8 @@ public static class NativeEntry
 
     private static int StartCore(bool scanPlugins)
     {
+        NativeForwardingLoggerProvider.AdvanceGeneration();
+
         // 有父级的出口就转发过去；没有（自持态、验证宿主）才落到控制台。
         s_loggerFactory = LoggerFactory.Create(builder =>
         {
