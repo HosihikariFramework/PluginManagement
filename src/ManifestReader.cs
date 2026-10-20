@@ -123,7 +123,7 @@ internal static class ManifestReader
             report($"{folderName}: 清单不是合法 JSON —— {ex.Message}");
             return null;
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             report($"{folderName}: 清单读不出来 —— {ex.Message}");
             return null;

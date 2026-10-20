@@ -198,6 +198,32 @@ internal static class RegressionChecks
         yield return ("R10 失败装载撤销 Provider 登记",
             !brokenLoaded && !ghostLoaded && rollbackHost.LoadedNames.Count == 0,
             $"broken={brokenLoaded} ghost={ghostLoaded} loaded={string.Join(",", rollbackHost.LoadedNames)}");
+
+        var providerRoot = Path.Combine(root, "provider-unload");
+        var providerHost = NewHost(providerRoot);
+        providerHost.AddProvider(new FailingProvider("none") { RegisterProvider = true });
+        var providerPackage = Stage(providerRoot, "ProviderPackage");
+        var providerLoaded = providerHost.Load(providerPackage);
+        var providerUnload = providerHost.Unload("ProviderPackage");
+        yield return ("R11 显式卸载 Provider 包被拒绝",
+            providerLoaded && !providerUnload.Released && providerHost.LoadedNames.Contains("ProviderPackage"),
+            providerUnload.Error ?? "卸载竟然成功");
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var aclRoot = Path.Combine(root, "manifest-acl");
+            var aclHost = NewHost(aclRoot);
+            aclHost.AddProvider(new FailingProvider("none"));
+            Stage(aclRoot, "Good");
+            var lockedPackage = Stage(aclRoot, "Locked");
+            File.SetUnixFileMode(Path.Combine(lockedPackage, "manifest.json"), UnixFileMode.None);
+            var aclIsolated = true;
+            try { aclHost.LoadAll(); }
+            catch { aclIsolated = false; }
+            yield return ("R12 读不了的清单只跳过该包",
+                aclIsolated && aclHost.LoadedNames.SequenceEqual(["Good"]),
+                string.Join(",", aclHost.LoadedNames));
+        }
     }
 
     private static PluginManagerHost NewHost(string root) => new(
@@ -352,6 +378,7 @@ internal static class RegressionChecks
         public IPluginContext? Context;
         public ManualResetEventSlim? SecondLoadStarted;
         public ManualResetEventSlim? SecondRelease;
+        public bool RegisterProvider { get; set; }
         public int Events, Unloads, Disables, Releases;
         public bool CanLoad(PluginManifest manifest) => manifest.Provider == Type;
         public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context)
@@ -386,6 +413,10 @@ internal static class RegressionChecks
             public void OnLoad(IPluginContext context)
             {
                 owner.UseContext(context);
+                if (owner.RegisterProvider)
+                {
+                    context.TryRegisterProvider(new GhostProvider());
+                }
                 if (name == "Broken" && owner._mode is "load" or "cleanup-throw")
                     throw new InvalidOperationException("load failure");
                 if (name == "Broken" && owner._mode == "fault-on-load")

@@ -348,7 +348,10 @@ public sealed class PluginManagerHost
         UnloadResult result;
         lock (_gate)
         {
-            result = UnloadLocked(name, ref reports);
+            // Provider 的登记不能撤销：它的类型住在自己的 ALC 里，放掉实例会让路由指向死代码。
+            result = _slots.TryGetValue(name, out var slot) && slot.IsProvider
+                ? UnloadResult.Failed($"{name}: Provider 登记不能撤销；更换 Provider 需要重启服务端")
+                : UnloadLocked(name, ref reports);
         }
 
         ReportAll(reports);

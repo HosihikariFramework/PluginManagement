@@ -20,6 +20,8 @@ public static class NativeEntry
     private static IntPtr s_logUser;
 
     // 故障卸载成功后，通知载体把父级的账摘掉（ADR-0030）。
+    // 回调与 user 成对读写；StopCore 置空时要等已经进桥的通知写完。
+    private static readonly Lock s_removalGate = new();
     private static IntPtr s_removalCallback;
     private static IntPtr s_removalUser;
 
@@ -57,9 +59,12 @@ public static class NativeEntry
             return 1;
         }
 
-        s_removalCallback = Marshal.ReadIntPtr(arg);
-        s_removalUser = Marshal.ReadIntPtr(arg, IntPtr.Size);
-        return s_removalCallback == IntPtr.Zero ? 1 : 0;
+        lock (s_removalGate)
+        {
+            s_removalCallback = Marshal.ReadIntPtr(arg);
+            s_removalUser = Marshal.ReadIntPtr(arg, IntPtr.Size);
+            return s_removalCallback == IntPtr.Zero ? 1 : 0;
+        }
     }
 
     /// <summary>
@@ -82,8 +87,8 @@ public static class NativeEntry
     public static int StartUnderParent(IntPtr arg, int argSizeInBytes) => StartCore(scanPlugins: false);
 
     /// <summary>
-    /// 父级要重载自己（Endstone 的 <c>/reload</c>）：把子插件全部收回，丢掉旧 host。
-    /// CLR 与 Shim 模块继续活着，下一次 <c>StartUnderParent</c> 建一个新的 host。
+    /// 父级要重载自己（Endstone 的 <c>/reload</c>）：把子插件全部收回，保留核心与 Provider。
+    /// CLR 与 Shim 模块继续活着，下一次 <c>StartUnderParent</c> 复用已有 host。
     /// </summary>
     [UnmanagedCallersOnly]
     public static int StopUnderParent(IntPtr arg, int argSizeInBytes) => StopCore();
@@ -120,8 +125,11 @@ public static class NativeEntry
             // 原生模块马上会被 Endstone 卸载。新模块的 onLoad 会重新 SetLogSink；
             // 在这段空窗里让所有旧 logger 只做空操作。
             NativeForwardingLoggerProvider.SetSink(IntPtr.Zero, IntPtr.Zero);
-            s_removalCallback = IntPtr.Zero;
-            s_removalUser = IntPtr.Zero;
+            lock (s_removalGate)
+            {
+                s_removalCallback = IntPtr.Zero;
+                s_removalUser = IntPtr.Zero;
+            }
         }
     }
 
@@ -225,29 +233,33 @@ public static class NativeEntry
     /// <summary>把“已移除”转给载体；没有出口时（验证宿主、自持态）只留在日志里。</summary>
     private static void ForwardRemoval(string name)
     {
-        var callback = s_removalCallback;
-        if (callback == IntPtr.Zero)
+        // 调用与 StopCore 的置空互斥：返回后原生模块才可能卸载。
+        lock (s_removalGate)
         {
-            return;
-        }
+            var callback = s_removalCallback;
+            if (callback == IntPtr.Zero)
+            {
+                return;
+            }
 
-        try
-        {
-            var sink = Marshal.GetDelegateForFunctionPointer<RemovalCallback>(callback);
-            var text = Marshal.StringToCoTaskMemUTF8(name);
             try
             {
-                sink(s_removalUser, text);
+                var sink = Marshal.GetDelegateForFunctionPointer<RemovalCallback>(callback);
+                var text = Marshal.StringToCoTaskMemUTF8(name);
+                try
+                {
+                    sink(s_removalUser, text);
+                }
+                finally
+                {
+                    Marshal.FreeCoTaskMem(text);
+                }
             }
-            finally
+            catch (Exception ex)
             {
-                Marshal.FreeCoTaskMem(text);
+                s_loggerFactory?.CreateLogger("Hosihikari")
+                    .LogError(ex, "通知载体移除 {Name} 失败", name);
             }
-        }
-        catch (Exception ex)
-        {
-            s_loggerFactory?.CreateLogger("Hosihikari")
-                .LogError(ex, "通知载体移除 {Name} 失败", name);
         }
     }
 
