@@ -125,6 +125,8 @@ public static class Packager
             }
         }
 
+        // file-based app 风格的 #:package 与 extraInfo.packages 一起在打包期还原。
+        var packages = ReadPackages(manifest, sourceDirectory, problems);
         if (problems.Count > 0)
         {
             return new PackResult(false, null, problems);
@@ -146,7 +148,7 @@ public static class Packager
             File.Copy(manifestPath, Path.Combine(staging, "manifest.json"), overwrite: true);
 
             // 清单里声明的第三方包在**这里**还原 —— 供应链留在打包那一刻，服务端加载时不联网。
-            if (!RestorePackages(manifest, staging, sharedLayer, problems))
+            if (!RestorePackages(packages, staging, sharedLayer, problems))
             {
                 return new PackResult(false, null, problems);
             }
@@ -181,27 +183,160 @@ public static class Packager
     }
 
     /// <summary>
-    /// 按清单 <c>extraInfo.packages</c> 还原第三方包，把它们的 dll 放进包里。
-    /// 格式是逗号分隔的 <c>Id/Version</c>；依赖闭包交给 SDK 解析，打包工具不自己碰 NuGet。
+    /// 收集清单 <c>extraInfo.packages</c>（逗号分隔的 <c>Id/Version</c>）与 C# 入口里的
+    /// <c>#:package Id@Version</c>。NuGet 只在打包期还原，服务端加载时不联网。
+    /// </summary>
+    private static List<string> ReadPackages(
+        PluginManifest manifest,
+        string sourceDirectory,
+        List<string> problems)
+    {
+        var packages = new List<string>();
+        if (manifest.ExtraInfo.TryGetValue("packages", out var packagesValue)
+            && packagesValue.ValueKind == JsonValueKind.String
+            && packagesValue.GetString() is { Length: > 0 } declared)
+        {
+            packages.AddRange(declared.Split(
+                ',',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+
+        if (manifest.Provider == "csharp")
+        {
+            ReadSourcePackages(sourceDirectory, manifest, packages, problems);
+        }
+
+        return packages.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static void ReadSourcePackages(
+        string sourceDirectory,
+        PluginManifest manifest,
+        List<string> packages,
+        List<string> problems)
+    {
+        var root = Path.GetFullPath(sourceDirectory);
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var visited = new HashSet<string>(OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal);
+
+        string Full(string path)
+        {
+            var full = Path.GetFullPath(Path.Combine(root, path));
+            if (!full.StartsWith(prefix, comparison))
+            {
+                problems.Add($"#:include 出界：{path}");
+            }
+
+            return full;
+        }
+
+        void Visit(string path)
+        {
+            var full = Full(path);
+            if (!full.StartsWith(prefix, comparison) || !visited.Add(full))
+            {
+                return;
+            }
+
+            if (!File.Exists(full))
+            {
+                problems.Add($"#:include 指向的 {path} 不存在");
+                return;
+            }
+
+            if (!string.Equals(Path.GetExtension(full), ".cs", StringComparison.OrdinalIgnoreCase))
+            {
+                problems.Add($"#:include 只支持 .cs：{path}");
+                return;
+            }
+
+            string[] lines;
+            try
+            {
+                lines = File.ReadAllLines(full);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                problems.Add($"读不了源码 {path}：{ex.Message}");
+                return;
+            }
+
+            foreach (var line in lines)
+            {
+                var trimmed = line.TrimStart();
+                if (IsDirective(trimmed, "#:package"))
+                {
+                    var value = trimmed["#:package".Length..].Trim();
+                    var separator = value.IndexOf('@');
+                    var id = separator < 0 ? value : value[..separator];
+                    var version = separator < 0 ? "*" : value[(separator + 1)..];
+                    if (id.Length == 0)
+                    {
+                        problems.Add($"{path}: #:package 缺少包名");
+                        continue;
+                    }
+
+                    if (version.Length == 0)
+                    {
+                        version = "*";
+                    }
+
+                    packages.Add($"{id}/{version}");
+                }
+                else if (IsDirective(trimmed, "#:include"))
+                {
+                    var include = trimmed["#:include".Length..].Trim().Trim('"');
+                    if (include.Length == 0)
+                    {
+                        problems.Add($"{path}: #:include 缺少路径");
+                    }
+                    else if (include.IndexOfAny(['*', '?']) >= 0)
+                    {
+                        problems.Add($"{path}: #:include 暂不支持通配符：{include}");
+                    }
+                    else
+                    {
+                        Visit(Path.Combine(Path.GetDirectoryName(path)!, include));
+                    }
+                }
+            }
+        }
+
+        var entry = manifest.Entry;
+        var entryPath = Full(entry);
+        if (entryPath.StartsWith(prefix, comparison) && !File.Exists(entryPath))
+        {
+            problems.Add($"清单 entry 指向的 {entry} 不在构建输出里");
+        }
+        else
+        {
+            Visit(entry);
+        }
+    }
+
+    private static bool IsDirective(string line, string directive) =>
+        line.StartsWith(directive, StringComparison.Ordinal)
+        && (line.Length == directive.Length || char.IsWhiteSpace(line[directive.Length]));
+
+    /// <summary>
+    /// 按已收集的 <c>Id/Version</c> 还原第三方包，把它们的 dll 放进包里。
+    /// 依赖闭包交给 SDK 解析，打包工具不自己碰 NuGet。
     /// </summary>
     private static bool RestorePackages(
-        PluginManifest manifest,
+        IReadOnlyList<string> references,
         string packageDirectory,
         IReadOnlyList<string> sharedLayer,
         List<string> problems)
     {
-        var declared = manifest.ExtraInfo.TryGetValue("packages", out var packagesValue)
-                       && packagesValue.ValueKind == JsonValueKind.String
-            ? packagesValue.GetString()
-            : null;
-        if (string.IsNullOrWhiteSpace(declared))
+        if (references.Count == 0)
         {
             return true;
         }
-
-        var references = declared
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .ToArray();
 
         var workspace = Path.Combine(Path.GetTempPath(), "hosihikari-pack-" + Guid.NewGuid().ToString("N"));
         try

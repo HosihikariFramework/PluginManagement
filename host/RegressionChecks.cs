@@ -301,13 +301,24 @@ internal static class RegressionChecks
     {
         var source = Path.Combine(root, "source");
         Directory.CreateDirectory(source);
+        File.WriteAllText(Path.Combine(source, "main.cs"), """
+            #:include helper.cs
+            #:package fixture@1.0.0
+            public static class Entry { }
+            """);
+        File.WriteAllText(Path.Combine(source, "helper.cs"), "public static class Helper { }");
         var manifest = Path.Combine(root, "manifest.json");
         File.WriteAllText(manifest, JsonSerializer.Serialize(new
         {
-            name = "OutputFixture", type = "hosihikari", entry = "main",
-            extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "regression", packages = "fixture/1.0.0" },
+            name = "OutputFixture", type = "hosihikari", entry = "main.cs",
+            extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "csharp" },
         }));
-        return Packager.Pack(source, manifest, Path.Combine(root, "packages"), []).Succeeded ? 0 : 1;
+        var result = Packager.Pack(source, manifest, Path.Combine(root, "packages"), []);
+        return result.Succeeded
+               && result.PackageDirectory is { } package
+               && File.Exists(Path.Combine(package, "helper.cs"))
+            ? 0
+            : 1;
     }
 
     private sealed class Marker { }
