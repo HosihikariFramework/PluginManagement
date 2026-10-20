@@ -25,6 +25,7 @@ public sealed class PluginManagerHost
     private readonly Dictionary<Guid, string> _loading = [];
     private readonly Dictionary<Guid, string> _pendingFaults = [];
     private readonly HashSet<Guid> _providerIds = [];
+    private readonly Dictionary<Guid, List<IPluginProvider>> _registeredProviders = [];
     private readonly List<IPluginProvider> _providers = [];
 
     public PluginManagerHost(
@@ -70,7 +71,7 @@ public sealed class PluginManagerHost
     /// <summary>
     /// 把一次登记归到具体的装载实例上；重载时据此保留 Provider，不保留普通子插件。
     /// </summary>
-    internal void MarkProvider(Guid instanceId)
+    internal void MarkProvider(Guid instanceId, IPluginProvider provider)
     {
         lock (_gate)
         {
@@ -81,6 +82,29 @@ public sealed class PluginManagerHost
             else
             {
                 _providerIds.Add(instanceId);
+            }
+
+            if (!_registeredProviders.TryGetValue(instanceId, out var registered))
+            {
+                _registeredProviders[instanceId] = registered = [];
+            }
+
+            registered.Add(provider);
+        }
+    }
+
+    /// <summary>加载失败时撤掉本次装载登记过的 Provider，别让死包继续接管路由。</summary>
+    private void RemoveProviders(Guid instanceId)
+    {
+        lock (_gate)
+        {
+            _providerIds.Remove(instanceId);
+            if (_registeredProviders.Remove(instanceId, out var registered))
+            {
+                foreach (var provider in registered)
+                {
+                    _providers.Remove(provider);
+                }
             }
         }
     }
@@ -628,7 +652,14 @@ public sealed class PluginManagerHost
         {
             _loading.Remove(slot.Id);
             _pendingFaults.Remove(slot.Id);
-            _providerIds.Remove(slot.Id);
+            if (!loaded)
+            {
+                RemoveProviders(slot.Id);
+            }
+            else
+            {
+                _providerIds.Remove(slot.Id);
+            }
             if (!loaded)
             {
                 if (enableStarted)
@@ -738,7 +769,7 @@ internal sealed class PluginContext(
     {
         if (host.TryAddProvider(provider, out var problem))
         {
-            host.MarkProvider(instanceId);
+            host.MarkProvider(instanceId, provider);
         }
         else if (problem is not null)
         {

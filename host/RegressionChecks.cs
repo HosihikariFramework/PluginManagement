@@ -179,6 +179,23 @@ internal static class RegressionChecks
         var bothDone = loadDone.Wait(TimeSpan.FromSeconds(5)) && unloadDone.Wait(TimeSpan.FromSeconds(5));
         yield return ("R9 加载路径不在锁内回调父级", bothDone && secondStarted.IsSet && loadError is null,
             $"loaded={string.Join(",", lockHost.LoadedNames)} error={loadError?.Message}");
+
+        var rollbackRoot = Path.Combine(root, "provider-rollback");
+        var rollbackHost = NewHost(rollbackRoot);
+        rollbackHost.AddProvider(new FailingProvider("provider-register-throw"));
+        var brokenPackage = Stage(rollbackRoot, "Broken");
+        var ghostPackage = StageManifest(rollbackRoot, "GhostUser", """
+            {
+              "name": "GhostUser", "entry": "main", "type": "hosihikari",
+              "dependencies": [],
+              "extraInfo": { "api": "2", "format_version": "1", "provider": "ghost" }
+            }
+            """);
+        var brokenLoaded = rollbackHost.Load(brokenPackage);
+        var ghostLoaded = rollbackHost.Load(ghostPackage);
+        yield return ("R10 失败装载撤销 Provider 登记",
+            !brokenLoaded && !ghostLoaded && rollbackHost.LoadedNames.Count == 0,
+            $"broken={brokenLoaded} ghost={ghostLoaded} loaded={string.Join(",", rollbackHost.LoadedNames)}");
     }
 
     private static PluginManagerHost NewHost(string root) => new(
@@ -293,6 +310,27 @@ internal static class RegressionChecks
 
     private sealed class Marker { }
 
+    private sealed class GhostProvider : IPluginProvider
+    {
+        public string Type => "ghost";
+        public bool CanLoad(PluginManifest manifest) => manifest.Provider == Type;
+        public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context) =>
+            new GhostInstance();
+
+        private sealed class GhostInstance() : PluginInstance(new GhostPlugin())
+        {
+            public override Func<bool> Release() => static () => true;
+        }
+
+        private sealed class GhostPlugin : IPlugin
+        {
+            public void OnLoad(IPluginContext context) { }
+            public PluginHookResult OnEnable() => PluginHookResult.Allow();
+            public PluginHookResult OnDisable() => PluginHookResult.Allow();
+            public void OnUnload() { }
+        }
+    }
+
     private sealed class FailingProvider(string mode) : IPluginProvider
     {
         private readonly string _mode = mode;
@@ -338,6 +376,11 @@ internal static class RegressionChecks
                     throw new InvalidOperationException("load failure");
                 if (name == "Broken" && owner._mode == "fault-on-load")
                     context.ReportFault("immediate death");
+                if (name == "Broken" && owner._mode == "provider-register-throw")
+                {
+                    context.RegisterProvider(new GhostProvider());
+                    throw new InvalidOperationException("provider registration then failure");
+                }
             }
             public PluginHookResult OnEnable() => name == "Broken" && owner._mode == "enable"
                 ? throw new InvalidOperationException("enable failure") : PluginHookResult.Allow();
