@@ -291,13 +291,16 @@ public sealed class PluginManagerHost
             return false;
         }
 
+        if (enable && slot.Enabled)
+        {
+            (reports ??= []).Add($"{name}: 已经启用，忽略重复请求");
+            return true;
+        }
+
         // 停用先关闸门：OnDisable 执行期间与返回之后都不再开始新的投递；拒绝时恢复。
         var scope = slot.Scope!;
-        var wasEnabled = false;
-        if (!enable)
-        {
-            wasEnabled = scope.Close();
-        }
+        var wasEnabled = slot.Enabled;
+        scope.Close();
 
         try
         {
@@ -306,7 +309,7 @@ public sealed class PluginManagerHost
                 : slot.Instance!.Plugin.OnDisable();
             if (!result.Allowed)
             {
-                if (!enable && wasEnabled)
+                if (wasEnabled && !enable)
                 {
                     scope.Open();
                 }
@@ -315,6 +318,7 @@ public sealed class PluginManagerHost
                 return false;
             }
 
+            slot.Enabled = enable;
             if (enable)
             {
                 scope.Open();
@@ -576,6 +580,7 @@ public sealed class PluginManagerHost
         PluginInstance? instance = null;
         var loadStarted = false;
         var enableStarted = false;
+        var enabled = false;
         var loaded = false;
         try
         {
@@ -626,6 +631,7 @@ public sealed class PluginManagerHost
                 else
                 {
                     scope.Open();
+                    enabled = true;
                 }
             }
 
@@ -637,6 +643,7 @@ public sealed class PluginManagerHost
             }
 
             slot.IsProvider = _providerIds.Remove(slot.Id);
+            slot.Enabled = enabled;
             slot.Instance = instance;
             slot.Scope = scope;
             _slots[manifest.Name] = slot;
@@ -716,6 +723,9 @@ public sealed class PluginManagerHost
 
         /// <summary>Provider 包；载体重载时保留，供新 loader 直接复用。</summary>
         public bool IsProvider { get; set; }
+
+        /// <summary>启用状态；重复 Enable/Disable 不能把闸门留在错误的一侧。</summary>
+        public bool Enabled { get; set; }
     }
 }
 

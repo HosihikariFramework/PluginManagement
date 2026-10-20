@@ -128,24 +128,54 @@ public static class Packager
             return new PackResult(false, null, problems);
         }
 
-        Directory.CreateDirectory(packageDirectory);
-        foreach (var file in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories))
+        // 先装到临时目录，成功后再替换 —— 还原失败不会留下一个能被 LoadAll 捡走的半包。
+        var staging = packageDirectory + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
         {
-            var relative = Path.GetRelativePath(sourceDirectory, file);
-            var target = Path.Combine(packageDirectory, relative);
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.Copy(file, target, overwrite: true);
+            Directory.CreateDirectory(staging);
+            foreach (var file in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(sourceDirectory, file);
+                var target = Path.Combine(staging, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.Copy(file, target, overwrite: true);
+            }
+
+            File.Copy(manifestPath, Path.Combine(staging, "manifest.json"), overwrite: true);
+
+            // 清单里声明的第三方包在**这里**还原 —— 供应链留在打包那一刻，服务端加载时不联网。
+            if (!RestorePackages(manifest, staging, sharedLayer, problems))
+            {
+                return new PackResult(false, null, problems);
+            }
+
+            if (Directory.Exists(packageDirectory))
+            {
+                Directory.Delete(packageDirectory, recursive: true);
+            }
+
+            Directory.Move(staging, packageDirectory);
+            return new PackResult(true, packageDirectory, []);
         }
-
-        File.Copy(manifestPath, Path.Combine(packageDirectory, "manifest.json"), overwrite: true);
-
-        // 清单里声明的第三方包在**这里**还原 —— 供应链留在打包那一刻，服务端加载时不联网。
-        if (!RestorePackages(manifest, packageDirectory, sharedLayer, problems))
+        catch (Exception ex)
         {
+            problems.Add($"写入包目录失败：{ex.Message}");
             return new PackResult(false, null, problems);
         }
-
-        return new PackResult(true, packageDirectory, []);
+        finally
+        {
+            if (Directory.Exists(staging))
+            {
+                try
+                {
+                    Directory.Delete(staging, recursive: true);
+                }
+                catch (IOException)
+                {
+                    // 清理失败不影响结果。
+                }
+            }
+        }
     }
 
     /// <summary>

@@ -263,10 +263,13 @@ guardedProvider.RefuseEnable = true;
 var enableRefused = !host.Enable("Guarded") && host.LoadedNames.Contains("Guarded");
 guardedProvider.RefuseEnable = false;
 var enableAllowed = host.Enable("Guarded");
+guardedProvider.RefuseEnable = true;
+var enableRepeated = host.Enable("Guarded");
+guardedProvider.RefuseEnable = false;
 checks.Add((
-    "A29 拒绝启用留在册、未启用",
-    guardedLoaded && enableRefused && enableAllowed,
-    $"loaded={guardedLoaded} refused={enableRefused} later={enableAllowed}"
+    "A29 拒绝启用留在册、未启用；已启用时重复启用不再调钩子",
+    guardedLoaded && enableRefused && enableAllowed && enableRepeated,
+    $"loaded={guardedLoaded} refused={enableRefused} later={enableAllowed} repeated={enableRepeated}"
 ));
 
 // A30：拒绝停用让卸载中止；允许后才真正卸掉（ADR-0030）
