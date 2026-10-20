@@ -108,6 +108,7 @@ internal static class RegressionChecks
         var manifestHost = NewHost(manifestRoot);
         manifestHost.AddProvider(new FailingProvider("none"));
         Stage(manifestRoot, "Good");
+        Stage(manifestRoot, "SelfDependency", "SelfDependency");
         Stage(manifestRoot, "NullDependencies");
         StageManifest(manifestRoot, "NullDependencies", """
             {
@@ -136,6 +137,7 @@ internal static class RegressionChecks
         yield return ("R8 清单 null 字段不中断整轮",
             !manifestThrew
             && manifestLoaded.Contains("Good")
+            && !manifestLoaded.Contains("SelfDependency")
             && !manifestLoaded.Contains("NullExtra")
             && !manifestLoaded.Contains("NullDependencyEntry"),
             string.Join(",", manifestLoaded));

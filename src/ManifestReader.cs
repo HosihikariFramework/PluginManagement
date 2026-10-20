@@ -108,6 +108,14 @@ internal static class ManifestReader
                 return null;
             }
 
+            // 父级态不跑依赖图；自依赖会让卸载永远看到“还有依赖者”。
+            if (manifest.Dependencies.Any(dependency =>
+                    string.Equals(dependency.Name, manifest.Name, StringComparison.Ordinal)))
+            {
+                report($"{folderName}: dependencies 不能依赖自身");
+                return null;
+            }
+
             return new PluginPackage(manifest, directory);
         }
         catch (JsonException ex)
