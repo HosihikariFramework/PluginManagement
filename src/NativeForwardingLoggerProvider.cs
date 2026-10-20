@@ -10,26 +10,29 @@ namespace Hosihikari.PluginManagement;
 ///
 /// 原生侧在启动时递进来一个 C 回调：<c>void (*)(void* user, int level, const char* utf8)</c>。
 /// 等级由这里映射成整数，文本一律 UTF-8、以 null 结尾 —— 与这条缝上的其它字符串一致。
+///
+/// 回调存在静态槽里，而不是每个 logger 各存一份：Endstone reload 会换掉原生模块，
+/// 但 Provider 仍要活着；新模块装上后更新这个槽，旧 logger 就重新指向新桥。
 /// </summary>
-internal sealed unsafe class NativeForwardingLoggerProvider(IntPtr callback, IntPtr user) : ILoggerProvider
+internal sealed unsafe class NativeForwardingLoggerProvider : ILoggerProvider
 {
-    private static long s_generation;
+    private static IntPtr s_callback;
+    private static IntPtr s_user;
 
-    /// <summary>
-    /// 旧原生日志器要被卸载时推进代次；旧 logger 捕获的代次不再相等，后续日志直接丢弃，
-    /// 不会跳进已经解除映射的父级回调。
-    /// </summary>
-    internal static void AdvanceGeneration() => Interlocked.Increment(ref s_generation);
+    /// <summary>更新父级日志出口；传 0 表示当前没有可用的桥，日志直接丢弃。</summary>
+    internal static void SetSink(IntPtr callback, IntPtr user)
+    {
+        Volatile.Write(ref s_user, user);
+        Volatile.Write(ref s_callback, callback);
+    }
 
-    private readonly long _generation = Volatile.Read(ref s_generation);
-
-    public ILogger CreateLogger(string categoryName) => new Logger(categoryName, callback, user, _generation);
+    public ILogger CreateLogger(string categoryName) => new Logger(categoryName);
 
     public void Dispose()
     {
     }
 
-    private sealed class Logger(string category, IntPtr callback, IntPtr user, long generation) : ILogger
+    private sealed class Logger(string category) : ILogger
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -42,7 +45,8 @@ internal sealed unsafe class NativeForwardingLoggerProvider(IntPtr callback, Int
             Exception? error,
             Func<TState, Exception?, string> formatter)
         {
-            if (!IsEnabled(logLevel) || generation != Volatile.Read(ref s_generation))
+            var callback = Volatile.Read(ref s_callback);
+            if (!IsEnabled(logLevel) || callback == IntPtr.Zero)
             {
                 return;
             }
@@ -58,7 +62,8 @@ internal sealed unsafe class NativeForwardingLoggerProvider(IntPtr callback, Int
             var bytes = Encoding.UTF8.GetBytes(message + "\0");
             fixed (byte* text = bytes)
             {
-                ((delegate* unmanaged[Cdecl]<IntPtr, int, byte*, void>)callback)(user, Level(logLevel), text);
+                ((delegate* unmanaged[Cdecl]<IntPtr, int, byte*, void>)callback)(
+                    Volatile.Read(ref s_user), Level(logLevel), text);
             }
         }
 

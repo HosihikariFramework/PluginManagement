@@ -39,6 +39,7 @@ public static class NativeEntry
 
         s_logCallback = Marshal.ReadIntPtr(arg);
         s_logUser = Marshal.ReadIntPtr(arg, IntPtr.Size);
+        NativeForwardingLoggerProvider.SetSink(s_logCallback, s_logUser);
         return s_logCallback == IntPtr.Zero ? 1 : 0;
     }
 
@@ -98,31 +99,29 @@ public static class NativeEntry
                 return 0;
             }
 
-            host.UnloadAll();
+            host.UnloadChildren();
             for (var i = 0; i < 10; i++)
             {
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
             }
 
-            // Provider 已清掉；再给暂时钉住 ALC 的插件一次验证机会。
-            host.UnloadAll();
+            // 给暂时钉住 ALC 的子插件一次重新验证的机会；Provider 槽位不动。
+            host.UnloadChildren();
             return 0;
         }
         catch (Exception ex)
         {
-            logger?.LogError(ex, "重载前回收核心失败");
+            logger?.LogError(ex, "重载前回收子插件失败");
             return 1;
         }
         finally
         {
-            // 旧 logger 捕获的是即将卸载的父级回调；推进代次后它们只剩空操作。
-            NativeForwardingLoggerProvider.AdvanceGeneration();
-            s_logCallback = IntPtr.Zero;
-            s_logUser = IntPtr.Zero;
+            // 原生模块马上会被 Endstone 卸载。新模块的 onLoad 会重新 SetLogSink；
+            // 在这段空窗里让所有旧 logger 只做空操作。
+            NativeForwardingLoggerProvider.SetSink(IntPtr.Zero, IntPtr.Zero);
             s_removalCallback = IntPtr.Zero;
             s_removalUser = IntPtr.Zero;
-            s_host = null;
         }
     }
 
@@ -254,7 +253,13 @@ public static class NativeEntry
 
     private static int StartCore(bool scanPlugins)
     {
-        NativeForwardingLoggerProvider.AdvanceGeneration();
+        if (s_host is not null)
+        {
+            // Endstone reload：Provider 与旧 host 留着，靠原生回调槽换到新模块。
+            s_loggerFactory?.CreateLogger("Hosihikari")
+                .LogInformation("复用已有核心：Provider 保持，子插件由新 loader 重新交付");
+            return 0;
+        }
 
         // 有父级的出口就转发过去；没有（自持态、验证宿主）才落到控制台。
         s_loggerFactory = LoggerFactory.Create(builder =>
@@ -266,7 +271,7 @@ public static class NativeEntry
             }
             else
             {
-                builder.AddProvider(new NativeForwardingLoggerProvider(s_logCallback, s_logUser));
+                builder.AddProvider(new NativeForwardingLoggerProvider());
             }
         });
         var logger = s_loggerFactory.CreateLogger("Hosihikari");

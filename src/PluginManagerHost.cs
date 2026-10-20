@@ -24,6 +24,7 @@ public sealed class PluginManagerHost
     private readonly Dictionary<string, Slot> _slots = new(StringComparer.Ordinal);
     private readonly Dictionary<Guid, string> _loading = [];
     private readonly Dictionary<Guid, string> _pendingFaults = [];
+    private readonly HashSet<Guid> _providerIds = [];
     private readonly List<IPluginProvider> _providers = [];
 
     public PluginManagerHost(
@@ -64,6 +65,24 @@ public sealed class PluginManagerHost
         }
 
         return added;
+    }
+
+    /// <summary>
+    /// 把一次登记归到具体的装载实例上；重载时据此保留 Provider，不保留普通子插件。
+    /// </summary>
+    internal void MarkProvider(Guid instanceId)
+    {
+        lock (_gate)
+        {
+            if (_slots.Values.FirstOrDefault(slot => slot.Id == instanceId) is { } loaded)
+            {
+                loaded.IsProvider = true;
+            }
+            else
+            {
+                _providerIds.Add(instanceId);
+            }
+        }
     }
 
     /// <summary>
@@ -161,6 +180,13 @@ public sealed class PluginManagerHost
 
                 if (_slots.TryGetValue(package.Manifest.Name, out var slot))
                 {
+                    if (slot.IsProvider && slot.State == PluginState.Loaded)
+                    {
+                        _loggerFactory.CreateLogger("Hosihikari")
+                            .LogInformation("{Name}: Provider 已加载，复用", package.Manifest.Name);
+                        return true;
+                    }
+
                     reports.Add($"{package.Manifest.Name}: 已经在册（{slot.State}）");
                     return false;
                 }
@@ -302,10 +328,10 @@ public sealed class PluginManagerHost
     }
 
     /// <summary>
-    /// 载体重载前的整批回收：先从依赖者往依赖卸，再清掉 Provider 登记。
-    /// 这个 host 之后不再使用；失败项由调用方决定是否丢弃。
+    /// 载体重载前的子插件回收。Provider 包按 ADR-0002 不能撤销登记，跨 reload 保留；
+    /// 它们造出来的实例与路由也留着，供新 loader 直接复用。
     /// </summary>
-    internal void UnloadAll()
+    internal void UnloadChildren()
     {
         List<string>? reports = [];
         try
@@ -314,6 +340,11 @@ public sealed class PluginManagerHost
             {
                 foreach (var name in _slots.Keys.Reverse().ToArray())
                 {
+                    if (_slots.TryGetValue(name, out var slot) && slot.IsProvider)
+                    {
+                        continue;
+                    }
+
                     var result = UnloadLocked(name, ref reports);
                     var error = result.Error;
                     if (!result.Released && error is not null)
@@ -321,9 +352,6 @@ public sealed class PluginManagerHost
                         reports?.Add($"{name}: {error}");
                     }
                 }
-
-                // Provider 对象可能属于正要回收的插件 ALC；不清掉它们，ALC 永远验不过。
-                _providers.Clear();
             }
         }
         finally
@@ -584,6 +612,7 @@ public sealed class PluginManagerHost
                 return false;
             }
 
+            slot.IsProvider = _providerIds.Remove(slot.Id);
             slot.Instance = instance;
             slot.Scope = scope;
             _slots[manifest.Name] = slot;
@@ -599,6 +628,7 @@ public sealed class PluginManagerHost
         {
             _loading.Remove(slot.Id);
             _pendingFaults.Remove(slot.Id);
+            _providerIds.Remove(slot.Id);
             if (!loaded)
             {
                 if (enableStarted)
@@ -652,6 +682,9 @@ public sealed class PluginManagerHost
 
         /// <summary>只在 <see cref="PluginState.Detached"/> 时在场。它只攥着一个 WeakReference，不钉住 ALC。</summary>
         public Func<bool>? Verify { get; set; }
+
+        /// <summary>Provider 包；载体重载时保留，供新 loader 直接复用。</summary>
+        public bool IsProvider { get; set; }
     }
 }
 
@@ -703,7 +736,11 @@ internal sealed class PluginContext(
     /// <summary>Provider 是个插件包，装载时用这个把自己交出去（ADR-0002）。</summary>
     public void RegisterProvider(IPluginProvider provider)
     {
-        if (!host.TryAddProvider(provider, out var problem) && problem is not null)
+        if (host.TryAddProvider(provider, out var problem))
+        {
+            host.MarkProvider(instanceId);
+        }
+        else if (problem is not null)
         {
             report(problem);
         }
