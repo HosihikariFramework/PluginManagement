@@ -20,6 +20,12 @@ internal static class DependencyVersion
 
         foreach (var dependency in manifest.Dependencies)
         {
+            if (dependency is null || string.IsNullOrWhiteSpace(dependency.Name))
+            {
+                problem = $"{manifest.Name}: dependencies 里必须有非空的 name";
+                return false;
+            }
+
             if (!string.IsNullOrWhiteSpace(dependency.Version)
                 && !VersionRange.TryParse(dependency.Version, out _))
             {
@@ -54,7 +60,10 @@ internal static class DependencyVersion
             return false;
         }
 
-        if (!range.Satisfies(version))
+        // 浮动版本（1.*、1.2.*）在 VersionRange 里没有上界，Satisfies 会放过 2.0.0；
+        // 上界由 FloatRange 给出，两个都要满足。
+        if (!range.Satisfies(version)
+            || (range.Float is { } floatRange && !floatRange.Satisfies(version)))
         {
             problem = $"依赖 {dependency.Name} 的版本 {version} 不满足 {dependency.Version}";
             return false;

@@ -264,17 +264,24 @@ internal static class RegressionChecks
         var versionHost = NewHost(versionRoot);
         versionHost.AddProvider(new FailingProvider("none"));
         StageVersioned(versionRoot, "Lib", "2.0.0");
+        StageVersioned(versionRoot, "Lib1", "1.5.0");
+        StageVersioned(versionRoot, "Lib12", "1.2.7");
         StageVersioned(versionRoot, "Exact", "1.0.0", ("Lib", "[2.0.0]"));
         StageVersioned(versionRoot, "Range", "1.0.0", ("Lib", "[1.0.0,3.0.0)"));
         StageVersioned(versionRoot, "Any", "1.0.0", ("Lib", null));
         StageVersioned(versionRoot, "Wrong", "1.0.0", ("Lib", "[3.0.0]"));
+        StageVersioned(versionRoot, "MajorWildcard", "1.0.0", ("Lib1", "1.*"));
+        StageVersioned(versionRoot, "MajorWildcardMiss", "1.0.0", ("Lib", "1.*"));
+        StageVersioned(versionRoot, "MinorWildcard", "1.0.0", ("Lib12", "1.2.*"));
+        StageVersioned(versionRoot, "MinorWildcardMiss", "1.0.0", ("Lib1", "1.2.*"));
         StageVersioned(versionRoot, "UntypedLib", null);
         StageVersioned(versionRoot, "NeedsUntyped", "1.0.0", ("UntypedLib", "[1.0.0,3.0.0)"));
         StageVersioned(versionRoot, "BadVersion", "not-semver");
         versionHost.LoadAll();
         var versionLoaded = versionHost.LoadedNames.OrderBy(name => name, StringComparer.Ordinal).ToArray();
         yield return ("R14 依赖版本约束过滤",
-            versionLoaded.SequenceEqual(["Any", "Exact", "Lib", "Range", "UntypedLib"]),
+            versionLoaded.SequenceEqual(
+                ["Any", "Exact", "Lib", "Lib1", "Lib12", "MajorWildcard", "MinorWildcard", "Range", "UntypedLib"]),
             string.Join(",", versionLoaded));
 
         var parentVersionRoot = Path.Combine(root, "dependency-versions-parent");
@@ -283,14 +290,18 @@ internal static class RegressionChecks
         var versionLib = StageVersioned(parentVersionRoot, "Lib", "2.0.0");
         var needs2 = StageVersioned(parentVersionRoot, "Needs2", "1.0.0", ("Lib", "[2.0.0]"));
         var needs3 = StageVersioned(parentVersionRoot, "Needs3", "1.0.0", ("Lib", "[3.0.0]"));
+        var needs2Star = StageVersioned(parentVersionRoot, "Needs2Star", "1.0.0", ("Lib", "2.*"));
+        var needs1Star = StageVersioned(parentVersionRoot, "Needs1Star", "1.0.0", ("Lib", "1.*"));
         var bare = StageVersioned(parentVersionRoot, "Bare", "1.0.0", ("Lib", null));
         var parentLoaded = parentVersionHost.Load(versionLib)
                            && parentVersionHost.Load(needs2)
                            && !parentVersionHost.Load(needs3)
+                           && parentVersionHost.Load(needs2Star)
+                           && !parentVersionHost.Load(needs1Star)
                            && parentVersionHost.Load(bare);
         yield return ("R15 父级交付也检查依赖版本",
             parentLoaded && parentVersionHost.LoadedNames.OrderBy(name => name, StringComparer.Ordinal)
-                .SequenceEqual(["Bare", "Lib", "Needs2"]),
+                .SequenceEqual(["Bare", "Lib", "Needs2", "Needs2Star"]),
             string.Join(",", parentVersionHost.LoadedNames));
 
         var packVersionRoot = Path.Combine(root, "pack-version");
@@ -319,6 +330,35 @@ internal static class RegressionChecks
             && badVersionPack.Problems.Any(problem => problem.Contains("SemVer", StringComparison.Ordinal))
             && badConstraintPack.Problems.Any(problem => problem.Contains("SemVer", StringComparison.Ordinal)),
             string.Join(" | ", badVersionPack.Problems.Concat(badConstraintPack.Problems)));
+
+        var nullDependencyManifest = Path.Combine(packVersionRoot, "null-dependency.json");
+        File.WriteAllText(nullDependencyManifest, """
+            {
+              "name": "NullDependency",
+              "entry": "main.dll",
+              "type": "hosihikari",
+              "version": "1.0.0",
+              "dependencies": [ null ],
+              "extraInfo": { "api": 2, "format_version": "1", "provider": "assembly" }
+            }
+            """);
+        PackResult? nullDependencyPack = null;
+        string? nullDependencyError = null;
+        try
+        {
+            nullDependencyPack = Packager.Pack(
+                packVersionSource, nullDependencyManifest, Path.Combine(packVersionRoot, "out-null-dep"), []);
+        }
+        catch (Exception ex)
+        {
+            nullDependencyError = $"{ex.GetType().Name}: {ex.Message}";
+        }
+
+        yield return ("R18 打包拒绝 null 依赖而不是抛出",
+            nullDependencyError is null
+            && nullDependencyPack is { Succeeded: false, Problems: { } nullProblems }
+            && nullProblems.Any(problem => problem.Contains("dependencies", StringComparison.Ordinal)),
+            nullDependencyError ?? string.Join(" | ", nullDependencyPack?.Problems ?? []));
 
         var fuzzRoot = Path.Combine(root, "manifest-fuzz");
         Directory.CreateDirectory(fuzzRoot);
