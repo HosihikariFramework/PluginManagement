@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using Hosihikari;
 using Hosihikari.PluginManagement.Pack;
@@ -318,6 +319,29 @@ internal static class RegressionChecks
             && badVersionPack.Problems.Any(problem => problem.Contains("SemVer", StringComparison.Ordinal))
             && badConstraintPack.Problems.Any(problem => problem.Contains("SemVer", StringComparison.Ordinal)),
             string.Join(" | ", badVersionPack.Problems.Concat(badConstraintPack.Problems)));
+
+        var fuzzRoot = Path.Combine(root, "manifest-fuzz");
+        Directory.CreateDirectory(fuzzRoot);
+        var fuzzRandom = new Random(20261021);
+        var fuzzClean = true;
+        string? fuzzError = null;
+        for (var i = 0; i < 200; i++)
+        {
+            var directory = Path.Combine(fuzzRoot, "p" + i);
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory, "manifest.json"), RandomManifest(fuzzRandom));
+            try
+            {
+                ManifestReader.Read(directory, _ => { });
+            }
+            catch (Exception ex)
+            {
+                fuzzClean = false;
+                fuzzError = $"{ex.GetType().Name}: {ex.Message}";
+                break;
+            }
+        }
+        yield return ("R17 畸形清单不抛出", fuzzClean, fuzzError ?? "200 份输入");
     }
 
     private static PluginManagerHost NewHost(string root) => new(
@@ -343,6 +367,23 @@ internal static class RegressionChecks
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, "manifest.json"), json);
         return directory;
+    }
+
+    private static string RandomManifest(Random random)
+    {
+        string[] fragments =
+        [
+            "{", "}", "[", "]", "\"name\"", ":", "\"p\"", "\"entry\"", "\"..\"", "\"main.dll\"",
+            "\"type\"", "\"hosihikari\"", "\"version\"", "\"1.0.0\"", "\"dependencies\"",
+            "null", "0", ",", "\\", "\n", "\"extraInfo\"", "\"api\"", "\"2\"",
+        ];
+        var builder = new StringBuilder();
+        for (var i = 0; i < random.Next(1, 50); i++)
+        {
+            builder.Append(fragments[random.Next(fragments.Length)]);
+        }
+
+        return builder.ToString();
     }
 
     private static string StageVersioned(
