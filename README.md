@@ -45,7 +45,7 @@ The RID-first native library probe uses the McMaster fork; check that out as a s
 ## As a lip package
 
 A `v*` tag builds `hosihikari-core-<version>.zip` and publishes it as
-`github.com/HosihikariFramework/PluginManagement`. The package installs the managed core under
+`github.com/HosihikariFramework/PluginManager`. The package installs the managed core under
 `plugins/hosihikari/`; the native Shim package declares a compatible Core version as a lip
 dependency. The native and managed sides check `HostingContractVersion` at startup.
 

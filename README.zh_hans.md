@@ -37,7 +37,7 @@ CI 跑的就是这一条命令，走的也是外部插件作者拿到契约的�
 ## 作为 lip 包
 
 打 `v*` 标签会构建 `hosihikari-core-<版本>.zip`，发布为
-`github.com/HosihikariFramework/PluginManagement`。包把插件管理者装进 `plugins/hosihikari/`；
+`github.com/HosihikariFramework/PluginManager`。包把插件管理者装进 `plugins/hosihikari/`；
 原生 Shim 包用 lip 依赖声明兼容的 Core 版本。原生侧与托管侧在启动时核对
 `HostingContractVersion`。
 

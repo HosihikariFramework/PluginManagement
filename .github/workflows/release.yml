@@ -20,7 +20,7 @@ jobs:
       - name: 契约
         uses: actions/checkout@v7
         with:
-          repository: HosihikariFramework/Abstractions
+          repository: HosihikariFramework/PluginAbstractions
           path: Hosihikari.Abstractions
 
       - name: McMaster fork
