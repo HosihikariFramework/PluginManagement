@@ -60,6 +60,11 @@ public static class Packager
             return new PackResult(false, null, problems);
         }
 
+        if (!DependencyVersion.TryValidateManifest(manifest, out var versionProblem))
+        {
+            problems.Add(versionProblem!);
+        }
+
         // 包目录名就是插件名 —— 目录名与清单 name 一致这条由这里保证（ADR-0006）。
         var packageDirectory = Path.Combine(outputRoot, manifest.Name);
 
