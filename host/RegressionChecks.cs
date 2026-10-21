@@ -267,7 +267,7 @@ internal static class RegressionChecks
         StageVersioned(versionRoot, "Range", "1.0.0", ("Lib", "[1.0.0,3.0.0)"));
         StageVersioned(versionRoot, "Any", "1.0.0", ("Lib", null));
         StageVersioned(versionRoot, "Wrong", "1.0.0", ("Lib", "[3.0.0]"));
-        StageVersioned(versionRoot, "NoVersion", null, ("Lib", ">=1.0.0"));
+        StageVersioned(versionRoot, "NoVersion", null, ("Lib", "[1.0.0,3.0.0)"));
         StageVersioned(versionRoot, "BadVersion", "not-semver");
         versionHost.LoadAll();
         var versionLoaded = versionHost.LoadedNames.OrderBy(name => name, StringComparer.Ordinal).ToArray();
