@@ -257,6 +257,31 @@ checks.Add((
     pinnedSecond.Error ?? "已回收"
 ));
 
+// A47：并发卸载共享同一个进行中的回收验证，验证等待不占 _gate。
+pinnedLoader.Pinned = true;
+var concurrentLoaded = host.Load(Path.Combine(stage, "parented", "Pinned"));
+var waitsBefore = pinnedLoader.WaitCalls;
+pinnedLoader.WaitStarted.Reset();
+var concurrentFirst = Task.Run(() => host.Unload("Pinned"));
+var firstWaiting = pinnedLoader.WaitStarted.Wait(TimeSpan.FromSeconds(2));
+var concurrentSecond = Task.Run(() => host.Unload("Pinned"));
+Thread.Sleep(300);
+pinnedLoader.Pinned = false;
+var concurrentFinished = Task.WaitAll(
+    new[] { concurrentFirst, concurrentSecond },
+    TimeSpan.FromSeconds(5));
+var concurrentReleased = concurrentFinished
+    && concurrentFirst.Result.Released
+    && concurrentSecond.Result.Released;
+checks.Add((
+    "A47 并发卸载共享同一个回收验证",
+    concurrentLoaded && firstWaiting && concurrentReleased
+        && pinnedLoader.WaitCalls - waitsBefore == 1
+        && !host.LoadedNames.Contains("Pinned"),
+    $"loaded={concurrentLoaded} waiting={firstWaiting} released={concurrentReleased} "
+        + $"waits={pinnedLoader.WaitCalls - waitsBefore}"
+));
+
 // A29：拒绝启用留在册、未启用（ADR-0030）
 var guardedLoaded = host.Load(Path.Combine(stage, "parented", "Guarded"));
 guardedLoader.RefuseEnable = true;

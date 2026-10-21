@@ -361,15 +361,7 @@ public sealed class PluginManager
     public UnloadResult Unload(string name)
     {
         List<string>? reports = null;
-        UnloadResult result;
-        lock (_gate)
-        {
-            // 加载器的登记不能撤销：它的类型住在自己的 ALC 里，放掉实例会让路由指向死代码。
-            result = _slots.TryGetValue(name, out var slot) && slot.IsLoader
-                ? UnloadResult.Failed($"{name}: 加载器登记不能撤销；更换加载器需要重启服务端")
-                : UnloadLocked(name, ref reports);
-        }
-
+        var result = UnloadCore(name, expectedInstanceId: null, ref reports);
         ReportAll(reports);
         return result;
     }
@@ -407,21 +399,25 @@ public sealed class PluginManager
         List<string>? reports = [];
         try
         {
+            // 先快照名字与装载编号：验证在锁外进行，期间可能有同名重载。
+            // 按编号回收，避免把新实例当成旧的卸掉。
+            (string Name, Guid Id)[] targets;
             lock (_gate)
             {
-                foreach (var name in _slots.Keys.Reverse().ToArray())
-                {
-                    if (_slots.TryGetValue(name, out var slot) && slot.IsLoader)
-                    {
-                        continue;
-                    }
+                targets = _slots
+                    .Where(entry => !entry.Value.IsLoader)
+                    .Select(entry => (entry.Key, entry.Value.Id))
+                    .Reverse()
+                    .ToArray();
+            }
 
-                    var result = UnloadLocked(name, ref reports);
-                    var error = result.Error;
-                    if (!result.Released && error is not null)
-                    {
-                        reports?.Add($"{name}: {error}");
-                    }
+            foreach (var (name, id) in targets)
+            {
+                var result = UnloadCore(name, id, ref reports);
+                var error = result.Error;
+                if (!result.Released && error is not null)
+                {
+                    reports?.Add($"{name}: {error}");
                 }
             }
         }
@@ -432,44 +428,99 @@ public sealed class PluginManager
     }
 
     /// <summary>
-    /// 卸载的加锁部分。报告先攒着，出了锁再发 —— 父级的日志回调可能拿父级自己的锁，
+    /// 卸载的加锁部分只做依赖检查与 Detach；回收验证在锁外等待（ADR-0023）。
+    /// 同一槽位的并发卸载共享同一个进行中的验证；失败后清空任务，下一次重新验证。
+    /// 报告先攒着，出了锁再发 —— 父级的日志回调可能拿父级自己的锁，
     /// 而父级线程可能正握着那把锁等 <see cref="_gate"/>；在锁内回调会互相等死。
     /// </summary>
-    private UnloadResult UnloadLocked(string name, ref List<string>? reports)
+    private UnloadResult UnloadCore(string name, Guid? expectedInstanceId, ref List<string>? reports)
     {
-        if (!_slots.TryGetValue(name, out var slot))
+        Slot slot;
+        Task<bool> verification;
+        lock (_gate)
         {
-            return UnloadResult.Failed($"{name} 未加载");
-        }
-
-        if (slot.State == PluginState.Loaded)
-        {
-            var dependents = _slots.Values
-                .Where(loaded => loaded.State == PluginState.Loaded)
-                .Where(p => p.Manifest.Dependencies.Any(d => d.Name == name))
-                .Select(p => p.Manifest.Name)
-                .ToArray();
-            if (dependents.Length > 0)
+            if (!_slots.TryGetValue(name, out slot!)
+                || (expectedInstanceId is { } expected && slot.Id != expected))
             {
-                return UnloadResult.Failed($"仍有依赖者：{string.Join(", ", dependents)}");
+                return UnloadResult.Failed($"{name} 未加载");
             }
 
-            var refusal = Detach(slot, ref reports);
-            if (refusal is not null)
+            // 加载器的登记不能撤销：它的类型住在自己的 ALC 里，放掉实例会让路由指向死代码。
+            if (slot.IsLoader)
             {
-                return UnloadResult.Failed($"{name} 拒绝停用：{refusal}");
+                return UnloadResult.Failed($"{name}: 加载器登记不能撤销；更换加载器需要重启服务端");
             }
+
+            if (slot.State == PluginState.Loaded)
+            {
+                var dependents = _slots.Values
+                    .Where(loaded => loaded.State == PluginState.Loaded)
+                    .Where(p => p.Manifest.Dependencies.Any(d => d.Name == name))
+                    .Select(p => p.Manifest.Name)
+                    .ToArray();
+                if (dependents.Length > 0)
+                {
+                    return UnloadResult.Failed($"仍有依赖者：{string.Join(", ", dependents)}");
+                }
+
+                var refusal = Detach(slot, ref reports);
+                if (refusal is not null)
+                {
+                    return UnloadResult.Failed($"{name} 拒绝停用：{refusal}");
+                }
+            }
+
+            if (slot.State != PluginState.Detached)
+            {
+                return UnloadResult.Failed($"{name} 状态异常（{slot.State}）");
+            }
+
+            if (slot.Verification is null)
+            {
+                var handle = slot.Handle;
+                slot.Verification = handle is null
+                    ? Task.FromResult(false)
+                    : Task.Run(() => Collected(handle));
+            }
+
+            verification = slot.Verification;
         }
 
-        // 到这里 slot 里已经没有指向插件与 ALC 的字段了，可以验回收。
-        if (!Collected(slot.Handle!))
+        bool released;
+        try
         {
+            released = verification.GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            (reports ??= []).Add($"{name}: 回收验证抛出 —— {ex.Demystify()}");
+            released = false;
+        }
+
+        lock (_gate)
+        {
+            if (!_slots.TryGetValue(name, out var current) || !ReferenceEquals(current, slot))
+            {
+                // 已由并发的卸载成功移除；这一次也如实算成功。
+                return released
+                    ? UnloadResult.Ok()
+                    : UnloadResult.Failed($"{name} 已不在册，回收验证未通过");
+            }
+
+            if (ReferenceEquals(current.Verification, verification))
+            {
+                current.Verification = null;
+            }
+
+            if (released)
+            {
+                _slots.Remove(name);
+                return UnloadResult.Ok();
+            }
+
             // 说"回收"而不是"ALC"：释放句柄长什么样是 Loader 自己的事（ADR-0010）。
             return UnloadResult.Failed($"{name} 已经放下，但回收验证没通过 —— 再卸载一次会重新验证");
         }
-
-        _slots.Remove(name);
-        return UnloadResult.Ok();
     }
 
     private void ReportAll(List<string>? reports)
@@ -495,7 +546,6 @@ public sealed class PluginManager
     internal void ReportFault(string name, Guid instanceId, string reason)
     {
         List<string>? reports = null;
-        UnloadResult result;
         var present = false;
         lock (_gate)
         {
@@ -505,7 +555,6 @@ public sealed class PluginManager
             {
                 present = true;
                 (reports ??= []).Add($"{name}: 故障 —— {reason}");
-                result = UnloadLocked(name, ref reports);
             }
             else if (_loading.TryGetValue(instanceId, out var loadingName) && loadingName == name)
             {
@@ -513,11 +562,12 @@ public sealed class PluginManager
                 _pendingFaults[instanceId] = reason;
                 return;
             }
-            else
-            {
-                result = UnloadResult.Failed($"{name} 未加载");
-            }
         }
+
+        // 验证在 _gate 外等待；expectedInstanceId 防止期间的同名重载被误卸（A45）。
+        var result = present
+            ? UnloadCore(name, instanceId, ref reports)
+            : UnloadResult.Failed($"{name} 未加载");
 
         // 报告与摘账都在锁外：它们会回到父级，而父级的锁可能正被等 _gate 的线程握着。
         ReportAll(reports);
@@ -759,6 +809,9 @@ public sealed class PluginManager
         public PluginHandle? Handle { get; set; }
 
         public PluginScope? Scope { get; set; }
+
+        /// <summary>只在 Detached 时存在；并发卸载共享同一个进行中的验证任务。</summary>
+        public Task<bool>? Verification { get; set; }
 
         /// <summary>Loader 包；载体重载时保留，供新 loader 直接复用。</summary>
         public bool IsLoader { get; set; }

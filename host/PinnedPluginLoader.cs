@@ -14,6 +14,12 @@ public sealed class PinnedPluginLoader : IPluginLoader
     /// <summary>为真时模拟"外面还有根"（ADR-0004 里作者欠的那笔账）。</summary>
     public bool Pinned { get; set; } = true;
 
+    /// <summary>回收验证实际被调用了几次；并发卸载应共享同一个验证。</summary>
+    public int WaitCalls;
+
+    /// <summary>第一次进入回收验证时置位，供并发测试同步。</summary>
+    public ManualResetEventSlim WaitStarted { get; } = new(false);
+
     public string Id => "pinned";
 
     public bool CanLoad(PluginManifest manifest) => manifest.Loader == Id;
@@ -43,6 +49,8 @@ internal sealed class PinnedPluginHandle(PinnedPlugin plugin, PinnedPluginLoader
             return false;
         }
 
+        Interlocked.Increment(ref loader.WaitCalls);
+        loader.WaitStarted.Set();
         for (var i = 0; i < 100 && loader.Pinned; i++)
         {
             await Task.Delay(10, cancellationToken).ConfigureAwait(false);
