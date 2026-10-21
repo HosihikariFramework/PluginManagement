@@ -16,7 +16,7 @@
   },
   "variants": [
     {
-      "label": "win_x64",
+      "label": "",
       "platform": "win-x64",
       "dependencies": {},
       "assets": [
@@ -42,7 +42,7 @@
       }
     },
     {
-      "label": "linux_x64",
+      "label": "",
       "platform": "linux-x64",
       "dependencies": {},
       "assets": [
