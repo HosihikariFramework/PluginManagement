@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Hosihikari;
 using Hosihikari.PluginManagement.Pack;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Hosihikari.PluginManagement.Spike;
@@ -224,6 +225,39 @@ internal static class RegressionChecks
                 aclIsolated && aclHost.LoadedNames.SequenceEqual(["Good"]),
                 string.Join(",", aclHost.LoadedNames));
         }
+
+        var reuseRoot = Path.Combine(root, "provider-reuse-log");
+        var reuseLock = new object();
+        var reuseParentHeld = new ManualResetEventSlim();
+        var reuseLogEntered = new ManualResetEventSlim();
+        var reuseLogger = new BlockingLoggerFactory(() =>
+        {
+            reuseLogEntered.Set();
+            lock (reuseLock) { }
+        });
+        var reuseHost = new PluginManagerHost(
+            Path.Combine(reuseRoot, "plugins"), Path.Combine(reuseRoot, "data"), Path.Combine(reuseRoot, "config"),
+            message => Console.WriteLine($"[回归] {message}"),
+            new SingleService(reuseLogger));
+        reuseHost.AddProvider(new FailingProvider("none") { RegisterProvider = true });
+        var reusePackage = Stage(reuseRoot, "ProviderPackage");
+        var firstLoad = reuseHost.Load(reusePackage);
+        UnloadResult? reuseUnload = null;
+        var unloadThread = Task.Run(() =>
+        {
+            lock (reuseLock)
+            {
+                reuseParentHeld.Set();
+                reuseLogEntered.Wait(TimeSpan.FromSeconds(2));
+                reuseUnload = reuseHost.Unload("ProviderPackage");
+            }
+        });
+        reuseParentHeld.Wait(TimeSpan.FromSeconds(2));
+        var reuseLoad = Task.Run(() => reuseHost.Load(reusePackage));
+        var completed = reuseLoad.Wait(TimeSpan.FromSeconds(5)) && unloadThread.Wait(TimeSpan.FromSeconds(5));
+        yield return ("R13 Provider 复用日志不在核心锁内",
+            firstLoad && completed && reuseLoad.Result && reuseUnload is { Released: false },
+            completed ? $"reload={reuseLoad.Result} unload={reuseUnload?.Error}" : "超时：日志回调与卸载互相等");
     }
 
     private static PluginManagerHost NewHost(string root) => new(
@@ -326,29 +360,58 @@ internal static class RegressionChecks
     internal static int PackOutputChild(string root)
     {
         var source = Path.Combine(root, "source");
-        Directory.CreateDirectory(source);
-        Directory.CreateDirectory(Path.Combine(source, "parts"));
-        File.WriteAllText(Path.Combine(source, "main.cs"), """
-            #:include parts/*.cs
+        Directory.CreateDirectory(Path.Combine(source, "src"));
+        Directory.CreateDirectory(Path.Combine(source, "shared"));
+        File.WriteAllText(Path.Combine(source, "src", "main.cs"), """
+            #:include "../shared/*.cs"
             #:package fixture@1.0.0
             public static class Entry { }
             """);
-        File.WriteAllText(Path.Combine(source, "parts", "helper.cs"), "public static class Helper { }");
+        File.WriteAllText(Path.Combine(source, "shared", "helper.cs"), "public static class Helper { }");
         var manifest = Path.Combine(root, "manifest.json");
         File.WriteAllText(manifest, JsonSerializer.Serialize(new
         {
-            name = "OutputFixture", type = "hosihikari", entry = "main.cs",
+            name = "OutputFixture", type = "hosihikari", entry = "src/main.cs",
             extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "csharp" },
         }));
         var result = Packager.Pack(source, manifest, Path.Combine(root, "packages"), []);
         return result.Succeeded
                && result.PackageDirectory is { } package
-               && File.Exists(Path.Combine(package, "parts", "helper.cs"))
+               && File.Exists(Path.Combine(package, "shared", "helper.cs"))
             ? 0
             : 1;
     }
 
     private sealed class Marker { }
+
+    private sealed class SingleService(ILoggerFactory loggerFactory) : IServiceProvider
+    {
+        public object? GetService(Type serviceType) =>
+            serviceType == typeof(ILoggerFactory) ? loggerFactory : null;
+    }
+
+    private sealed class BlockingLoggerFactory(Action onLog) : ILoggerFactory
+    {
+        public ILogger CreateLogger(string categoryName) => new BlockingLogger(onLog);
+
+        public void AddProvider(ILoggerProvider provider) { }
+
+        public void Dispose() { }
+
+        private sealed class BlockingLogger(Action onLog) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter) => onLog();
+        }
+    }
 
     private sealed class GhostProvider : IPluginProvider
     {

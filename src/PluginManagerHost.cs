@@ -193,34 +193,44 @@ public sealed class PluginManagerHost
     {
         var reports = new List<string>();
         var result = false;
+        string? reusedProvider = null;
         try
         {
             lock (_gate)
             {
                 if (ManifestReader.Read(packageDirectory, reports.Add) is not { } package)
                 {
-                    return false;
+                    result = false;
                 }
-
-                if (_slots.TryGetValue(package.Manifest.Name, out var slot))
+                else if (_slots.TryGetValue(package.Manifest.Name, out var slot))
                 {
                     if (slot.IsProvider && slot.State == PluginState.Loaded)
                     {
-                        _loggerFactory.CreateLogger("Hosihikari")
-                            .LogInformation("{Name}: Provider 已加载，复用", package.Manifest.Name);
-                        return true;
+                        reusedProvider = package.Manifest.Name;
+                        result = true;
                     }
-
-                    reports.Add($"{package.Manifest.Name}: 已经在册（{slot.State}）");
-                    return false;
+                    else
+                    {
+                        reports.Add($"{package.Manifest.Name}: 已经在册（{slot.State}）");
+                        result = false;
+                    }
                 }
-
-                result = LoadOne(package, enable: false, reports);
+                else
+                {
+                    result = LoadOne(package, enable: false, reports);
+                }
             }
         }
         finally
         {
             ReportAll(reports);
+        }
+
+        // 父级的日志回调可能拿父级的锁；出了 _gate 再写，避免与卸载路径互相等。
+        if (reusedProvider is not null)
+        {
+            _loggerFactory.CreateLogger("Hosihikari")
+                .LogInformation("{Name}: Provider 已加载，复用", reusedProvider);
         }
 
         return result;

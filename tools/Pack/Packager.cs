@@ -308,7 +308,7 @@ public static class Packager
                                 continue;
                             }
 
-                            var matches = ExpandGlob(fullBase, include);
+                            var matches = ExpandGlob(root, fullBase, include);
                             if (matches.Length == 0)
                             {
                                 problems.Add($"{path}: #:include 没有匹配到文件：{include}");
@@ -345,12 +345,13 @@ public static class Packager
         line.StartsWith(directive, StringComparison.Ordinal)
         && (line.Length == directive.Length || char.IsWhiteSpace(line[directive.Length]));
 
-    private static string[] ExpandGlob(string baseDirectory, string pattern)
+    private static string[] ExpandGlob(string packageRoot, string baseDirectory, string pattern)
     {
+        // 从包根枚举：相对路径里可以带 ..，按模板目录枚举会漏掉兄弟目录。
         var normalized = pattern.Replace('\\', '/');
         var regex = new Regex(GlobToRegex(normalized), RegexOptions.CultureInvariant);
         return Directory
-            .EnumerateFiles(baseDirectory, "*", SearchOption.AllDirectories)
+            .EnumerateFiles(packageRoot, "*", SearchOption.AllDirectories)
             .Where(file => file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
             .Where(file => regex.IsMatch(Path.GetRelativePath(baseDirectory, file).Replace('\\', '/')))
             .OrderBy(file => file, StringComparer.Ordinal)
