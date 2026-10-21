@@ -56,6 +56,12 @@ internal static class DependencyGraph
                 return false;
             }
 
+            if (!DependencyVersion.Satisfies(target.Manifest, dependency, out var versionProblem))
+            {
+                report($"{name}: {versionProblem}");
+                return false;
+            }
+
             if (!Visit(target, byName, state, order, report))
             {
                 return false;

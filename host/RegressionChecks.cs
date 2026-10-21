@@ -258,6 +258,65 @@ internal static class RegressionChecks
         yield return ("R13 Provider 复用日志不在核心锁内",
             firstLoad && completed && reuseLoad.Result && reuseUnload is { Released: false },
             completed ? $"reload={reuseLoad.Result} unload={reuseUnload?.Error}" : "超时：日志回调与卸载互相等");
+
+        var versionRoot = Path.Combine(root, "dependency-versions");
+        var versionHost = NewHost(versionRoot);
+        versionHost.AddProvider(new FailingProvider("none"));
+        StageVersioned(versionRoot, "Lib", "2.0.0");
+        StageVersioned(versionRoot, "Exact", "1.0.0", ("Lib", "[2.0.0]"));
+        StageVersioned(versionRoot, "Range", "1.0.0", ("Lib", "[1.0.0,3.0.0)"));
+        StageVersioned(versionRoot, "Any", "1.0.0", ("Lib", null));
+        StageVersioned(versionRoot, "Wrong", "1.0.0", ("Lib", "[3.0.0]"));
+        StageVersioned(versionRoot, "NoVersion", null, ("Lib", ">=1.0.0"));
+        StageVersioned(versionRoot, "BadVersion", "not-semver");
+        versionHost.LoadAll();
+        var versionLoaded = versionHost.LoadedNames.OrderBy(name => name, StringComparer.Ordinal).ToArray();
+        yield return ("R14 依赖版本约束过滤",
+            versionLoaded.SequenceEqual(["Any", "Exact", "Lib", "Range"]),
+            string.Join(",", versionLoaded));
+
+        var parentVersionRoot = Path.Combine(root, "dependency-versions-parent");
+        var parentVersionHost = NewHost(parentVersionRoot);
+        parentVersionHost.AddProvider(new FailingProvider("none"));
+        var versionLib = StageVersioned(parentVersionRoot, "Lib", "2.0.0");
+        var needs2 = StageVersioned(parentVersionRoot, "Needs2", "1.0.0", ("Lib", "[2.0.0]"));
+        var needs3 = StageVersioned(parentVersionRoot, "Needs3", "1.0.0", ("Lib", "[3.0.0]"));
+        var bare = StageVersioned(parentVersionRoot, "Bare", "1.0.0", ("Lib", null));
+        var parentLoaded = parentVersionHost.Load(versionLib)
+                           && parentVersionHost.Load(needs2)
+                           && !parentVersionHost.Load(needs3)
+                           && parentVersionHost.Load(bare);
+        yield return ("R15 父级交付也检查依赖版本",
+            parentLoaded && parentVersionHost.LoadedNames.OrderBy(name => name, StringComparer.Ordinal)
+                .SequenceEqual(["Bare", "Lib", "Needs2"]),
+            string.Join(",", parentVersionHost.LoadedNames));
+
+        var packVersionRoot = Path.Combine(root, "pack-version");
+        var packVersionSource = Path.Combine(packVersionRoot, "source");
+        Directory.CreateDirectory(packVersionSource);
+        var badVersionManifest = Path.Combine(packVersionRoot, "bad-version.json");
+        File.WriteAllText(badVersionManifest, JsonSerializer.Serialize(new
+        {
+            name = "BadVersion", entry = "main.dll", type = "hosihikari", version = "not-semver",
+            dependencies = Array.Empty<object>(),
+            extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "assembly" },
+        }));
+        var badConstraintManifest = Path.Combine(packVersionRoot, "bad-constraint.json");
+        File.WriteAllText(badConstraintManifest, JsonSerializer.Serialize(new
+        {
+            name = "BadConstraint", entry = "main.dll", type = "hosihikari", version = "1.0.0",
+            dependencies = new[] { new { name = "Lib", version = ">>1" } },
+            extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "assembly" },
+        }));
+        var badVersionPack = Packager.Pack(
+            packVersionSource, badVersionManifest, Path.Combine(packVersionRoot, "out-version"), []);
+        var badConstraintPack = Packager.Pack(
+            packVersionSource, badConstraintManifest, Path.Combine(packVersionRoot, "out-constraint"), []);
+        yield return ("R16 打包拒绝非法版本与约束",
+            !badVersionPack.Succeeded && !badConstraintPack.Succeeded
+            && badVersionPack.Problems.Any(problem => problem.Contains("SemVer", StringComparison.Ordinal))
+            && badConstraintPack.Problems.Any(problem => problem.Contains("SemVer", StringComparison.Ordinal)),
+            string.Join(" | ", badVersionPack.Problems.Concat(badConstraintPack.Problems)));
     }
 
     private static PluginManagerHost NewHost(string root) => new(
@@ -284,6 +343,25 @@ internal static class RegressionChecks
         File.WriteAllText(Path.Combine(directory, "manifest.json"), json);
         return directory;
     }
+
+    private static string StageVersioned(
+        string root,
+        string name,
+        string? version,
+        params (string Name, string? Version)[] dependencies) =>
+        StageManifest(root, name, JsonSerializer.Serialize(new
+        {
+            name,
+            entry = "main",
+            type = "hosihikari",
+            version,
+            dependencies = dependencies.Select(dependency => new
+            {
+                name = dependency.Name,
+                version = dependency.Version,
+            }).ToArray(),
+            extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "regression" },
+        }));
 
     private static bool RejectsReleasedScope(PluginScope scope)
     {

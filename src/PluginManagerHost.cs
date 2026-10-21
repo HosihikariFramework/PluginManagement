@@ -215,6 +215,11 @@ public sealed class PluginManagerHost
                         result = false;
                     }
                 }
+                else if (DependencyProblem(package.Manifest) is { } dependencyProblem)
+                {
+                    reports.Add($"{package.Manifest.Name}: {dependencyProblem}");
+                    result = false;
+                }
                 else
                 {
                     result = LoadOne(package, enable: false, reports);
@@ -366,6 +371,30 @@ public sealed class PluginManagerHost
 
         ReportAll(reports);
         return result;
+    }
+
+    /// <summary>父级态下的依赖检查：目标已在场，且版本满足清单约束（ADR-0039）。</summary>
+    private string? DependencyProblem(PluginManifest manifest)
+    {
+        foreach (var dependency in manifest.Dependencies)
+        {
+            if (dependency.Name == PluginContract.ShimModName)
+            {
+                continue;
+            }
+
+            if (!_slots.TryGetValue(dependency.Name, out var slot) || slot.State != PluginState.Loaded)
+            {
+                return $"依赖未加载：{dependency.Name}";
+            }
+
+            if (!DependencyVersion.Satisfies(slot.Manifest, dependency, out var problem))
+            {
+                return problem;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

@@ -116,6 +116,12 @@ internal static class ManifestReader
                 return null;
             }
 
+            if (!DependencyVersion.TryValidateManifest(manifest, out var versionProblem))
+            {
+                report(versionProblem!);
+                return null;
+            }
+
             return new PluginPackage(manifest, directory);
         }
         catch (JsonException ex)
