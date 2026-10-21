@@ -101,7 +101,14 @@ static int PackProvider(string sourceDirectory, string manifestPath, string outp
     {
         if (Directory.Exists(staging))
         {
-            Directory.Delete(staging, recursive: true);
+            try
+            {
+                Directory.Delete(staging, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // 临时目录清不掉不影响已完成的包。
+            }
         }
     }
 }

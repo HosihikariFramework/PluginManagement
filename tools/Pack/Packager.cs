@@ -180,7 +180,7 @@ public static class Packager
                 {
                     Directory.Delete(staging, recursive: true);
                 }
-                catch (IOException)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
                     // 清理失败不影响结果。
                 }
