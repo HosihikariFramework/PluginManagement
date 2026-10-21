@@ -37,3 +37,12 @@ jobs:
       - name: 跑断言
         working-directory: Hosihikari.PluginManager
         run: dotnet run --project host/Hosihikari.PluginManager.Host.csproj -c Release
+
+      # 核心包本身也过一遍打包，避免发布时才暴露形状问题。
+      - name: 打包检查
+        working-directory: Hosihikari.PluginManager
+        run: |
+          set -euo pipefail
+          bash ./pack.sh 0.0.0-check
+          unzip -l artifacts/hosihikari-core-0.0.0-check.zip | grep -q 'Hosihikari.PluginManager.dll'
+          unzip -l artifacts/hosihikari-core-0.0.0-check.zip | grep -q 'Hosihikari.PluginManager.runtimeconfig.json'
