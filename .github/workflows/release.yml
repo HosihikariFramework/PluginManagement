@@ -1,0 +1,62 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 本仓
+        uses: actions/checkout@v7
+        with:
+          path: Hosihikari.PluginManager
+
+      # 核心按 ../.. 找契约与 McMaster fork；并列摆放才能编到源码。
+      - name: 契约
+        uses: actions/checkout@v7
+        with:
+          repository: HosihikariFramework/Abstractions
+          path: Hosihikari.Abstractions
+
+      - name: McMaster fork
+        uses: actions/checkout@v7
+        with:
+          repository: HosihikariFramework/Hosihikari.McMaster.NETCore.Plugins
+          path: Hosihikari.McMaster.NETCore.Plugins
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 校验 tooth 版本
+        shell: bash
+        working-directory: Hosihikari.PluginManager
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          tooth=$(jq -r .version tooth.json)
+          if [ "$tooth" != "$tag" ]; then
+            echo "tooth.json 是 $tooth，标签版本是 $tag" >&2
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+        id: version
+
+      - name: 打包
+        working-directory: Hosihikari.PluginManager
+        run: bash ./pack.sh "${{ steps.version.outputs.version }}"
+
+      - name: 发 release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ github.ref_name }}" \
+            Hosihikari.PluginManager/artifacts/*.zip \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" --generate-notes

@@ -42,6 +42,15 @@ The RID-first native library probe uses the McMaster fork; check that out as a s
 - **This repository alone** (CI, and any external consumer) → `PackageReference`, pinned to an exact
   version.
 
+## As a lip package
+
+A `v*` tag builds `hosihikari-core-<version>.zip` and publishes it as
+`github.com/HosihikariFramework/PluginManagement`. The package installs the managed core under
+`plugins/hosihikari/`; the native Shim package declares a compatible Core version as a lip
+dependency. The native and managed sides check `HostingContractVersion` at startup.
+
+For a source deployment, `bash ./pack.sh <version>` builds the same archive locally.
+
 ## What is not here
 
 - **The Shim** — the native layer that hosts the CLR inside the BDS process — is its own repository.

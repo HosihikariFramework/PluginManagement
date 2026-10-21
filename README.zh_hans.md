@@ -34,6 +34,15 @@ CI 跑的就是这一条命令，走的也是外部插件作者拿到契约的�
 
 本机库的 RID 优先解析走 McMaster 的 fork；它也必须作为兄弟目录检出（CI 就是这么摆的）。
 
+## 作为 lip 包
+
+打 `v*` 标签会构建 `hosihikari-core-<版本>.zip`，发布为
+`github.com/HosihikariFramework/PluginManagement`。包把托管核心装进 `plugins/hosihikari/`；
+原生 Shim 包用 lip 依赖声明兼容的 Core 版本。原生侧与托管侧在启动时核对
+`HostingContractVersion`。
+
+源码部署时，`bash ./pack.sh <版本>` 可以在本地构建同一份归档。
+
 ## 不在这里的
 
 - **Shim** —— 把 CLR 托管进 BDS 进程的那层原生代码，是独立的仓。

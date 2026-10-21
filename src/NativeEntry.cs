@@ -26,6 +26,16 @@ public static class NativeEntry
     private static IntPtr s_removalUser;
 
     /// <summary>
+    /// 原生垫片与托管核心之间的入口契约版本。入口方法集合、回调布局或生命周期约定
+    /// 发生不兼容变化时递增；垫片启动时先读这个值。
+    /// </summary>
+    public const int HostingContractVersion = 1;
+
+    /// <summary>给原生垫片读取的契约版本入口。</summary>
+    [UnmanagedCallersOnly]
+    public static int GetHostingContractVersion(IntPtr arg, int argSizeInBytes) => HostingContractVersion;
+
+    /// <summary>
     /// 父级交来日志出口：<paramref name="arg"/> 指向 <c>{ void* callback; void* user; }</c>。
     /// 两个指针都要拷出来 —— 那块内存在调用方栈上，返回就没了。
     /// </summary>
