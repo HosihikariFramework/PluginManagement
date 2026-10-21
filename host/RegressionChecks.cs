@@ -267,12 +267,13 @@ internal static class RegressionChecks
         StageVersioned(versionRoot, "Range", "1.0.0", ("Lib", "[1.0.0,3.0.0)"));
         StageVersioned(versionRoot, "Any", "1.0.0", ("Lib", null));
         StageVersioned(versionRoot, "Wrong", "1.0.0", ("Lib", "[3.0.0]"));
-        StageVersioned(versionRoot, "NoVersion", null, ("Lib", "[1.0.0,3.0.0)"));
+        StageVersioned(versionRoot, "UntypedLib", null);
+        StageVersioned(versionRoot, "NeedsUntyped", "1.0.0", ("UntypedLib", "[1.0.0,3.0.0)"));
         StageVersioned(versionRoot, "BadVersion", "not-semver");
         versionHost.LoadAll();
         var versionLoaded = versionHost.LoadedNames.OrderBy(name => name, StringComparer.Ordinal).ToArray();
         yield return ("R14 依赖版本约束过滤",
-            versionLoaded.SequenceEqual(["Any", "Exact", "Lib", "Range"]),
+            versionLoaded.SequenceEqual(["Any", "Exact", "Lib", "Range", "UntypedLib"]),
             string.Join(",", versionLoaded));
 
         var parentVersionRoot = Path.Combine(root, "dependency-versions-parent");
