@@ -3,7 +3,7 @@ using System.Text;
 
 using Microsoft.Extensions.Logging;
 
-namespace Hosihikari.PluginManagement;
+namespace Hosihikari.Internal;
 
 /// <summary>
 /// 把托管的日志转发给父级的日志器（ADR-0007 的出口一侧）。
@@ -12,7 +12,7 @@ namespace Hosihikari.PluginManagement;
 /// 等级由这里映射成整数，文本一律 UTF-8、以 null 结尾 —— 与这条缝上的其它字符串一致。
 ///
 /// 回调存在静态槽里，而不是每个 logger 各存一份：Endstone reload 会换掉原生模块，
-/// 但 Provider 仍要活着；新模块装上后更新这个槽，旧 logger 就重新指向新桥。
+/// 但 Loader 仍要活着；新模块装上后更新这个槽，旧 logger 就重新指向新桥。
 /// </summary>
 internal sealed unsafe class NativeForwardingLoggerProvider : ILoggerProvider
 {

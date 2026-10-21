@@ -1,32 +1,55 @@
 using Hosihikari;
 
-namespace Hosihikari.PluginManagement.Spike;
+namespace Hosihikari.Spike;
 
 /// <summary>
-/// 一个"外面还有根指着它"的插件：在 <see cref="Pinned"/> 放开之前，释放后的回收验证不会通过。
+/// 一个"外面还有根指着它"的插件：在 <see cref="Pinned"/> 放开之前，回收验证不会通过。
 ///
 /// 真实的钉法是 ALC 之外的一个根（没退出的线程、共享层里的静态、宿主侧的静态），
 /// 真实的 ALC 回收纪律由 A3 那条覆盖。这条要钉的是宿主的状态机：
 /// 放下之后照实报失败、状态停在待回收，再问一次是**重新验证**而不是"未加载"。
 /// </summary>
-public sealed class PinnedPluginProvider : IPluginProvider
+public sealed class PinnedPluginLoader : IPluginLoader
 {
     /// <summary>为真时模拟"外面还有根"（ADR-0004 里作者欠的那笔账）。</summary>
     public bool Pinned { get; set; } = true;
 
-    public string Type => "pinned";
+    public string Id => "pinned";
 
-    public bool CanLoad(PluginManifest manifest) => manifest.Provider == Type;
+    public bool CanLoad(PluginManifest manifest) => manifest.Loader == Id;
 
-    public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context) =>
-        new PinnedPluginInstance(new PinnedPlugin(), this);
+    public PluginHandle? Load(PluginManifest manifest, string packageDirectory, IPluginContext context) =>
+        new PinnedPluginHandle(new PinnedPlugin(), this);
 }
 
-internal sealed class PinnedPluginInstance(PinnedPlugin plugin, PinnedPluginProvider provider)
-    : PluginInstance(plugin)
+internal sealed class PinnedPluginHandle(PinnedPlugin plugin, PinnedPluginLoader loader)
+    : PluginHandle(plugin)
 {
-    /// <summary>验证器只攥着 Provider，不把插件实例拖进来 —— 与真实的验证器只攥一个 WeakReference 同理。</summary>
-    public override Func<bool> Release() => () => !provider.Pinned;
+    private bool _unloadStarted;
+
+    public override bool IsUnloaded => _unloadStarted && !loader.Pinned;
+
+    /// <summary>只攥着加载器；插件实例在放下后立即松手 —— 与真实句柄只攥一个 WeakReference 同理。</summary>
+    public override void Unload()
+    {
+        _unloadStarted = true;
+        Plugin = null;
+    }
+
+    public override async Task<bool> WaitForUnloadAsync(CancellationToken cancellationToken = default)
+    {
+        if (!_unloadStarted)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < 100 && loader.Pinned; i++)
+        {
+            await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+        }
+
+        return !loader.Pinned;
+    }
 }
 
 internal sealed class PinnedPlugin : IPlugin

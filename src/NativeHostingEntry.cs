@@ -1,17 +1,18 @@
-using Microsoft.Extensions.DependencyInjection;
 using System.Runtime.InteropServices;
+using Hosihikari.Internal;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace Hosihikari.PluginManagement;
+namespace Hosihikari;
 
 /// <summary>
 /// 原生 Shim 调进来的那一个入口（ADR-0005）—— "原生 → 托管"这条缝的托管一侧。
 /// 它由 <c>get_function_pointer</c> 按类型名与方法名取到，形状就是 <c>component_entry_point_fn</c>。
 /// </summary>
-public static class NativeEntry
+public static class NativeHostingEntry
 {
     // 插件活得比这个方法长，所以宿主与日志工厂也必须活得比它长。
-    private static PluginManagerHost? s_host;
+    private static PluginManager? s_host;
     private static ILoggerFactory? s_loggerFactory;
 
     // 父级的日志出口。原生侧在启动时把自己的日志器包成一个 C 回调递进来 ——
@@ -97,7 +98,7 @@ public static class NativeEntry
     public static int StartUnderParent(IntPtr arg, int argSizeInBytes) => StartCore(scanPlugins: false);
 
     /// <summary>
-    /// 父级要重载自己（Endstone 的 <c>/reload</c>）：把子插件全部收回，保留核心与 Provider。
+    /// 父级要重载自己（Endstone 的 <c>/reload</c>）：把子插件全部收回，保留核心与 Loader。
     /// CLR 与 Shim 模块继续活着，下一次 <c>StartUnderParent</c> 复用已有 host。
     /// </summary>
     [UnmanagedCallersOnly]
@@ -121,7 +122,7 @@ public static class NativeEntry
                 GC.WaitForPendingFinalizers();
             }
 
-            // 给暂时钉住 ALC 的子插件一次重新验证的机会；Provider 槽位不动。
+            // 给暂时钉住 ALC 的子插件一次重新验证的机会；Loader 槽位不动。
             host.UnloadChildren();
             return 0;
         }
@@ -203,7 +204,7 @@ public static class NativeEntry
                 return 1;
             }
 
-            // 前三个的失败原因由核心自己报过（它会走 _report）。
+            // 前三个的失败原因由核心自己报过（它会走 _reportFault）。
             switch (verb)
             {
                 case Verb.Load:
@@ -277,9 +278,9 @@ public static class NativeEntry
     {
         if (s_host is not null)
         {
-            // Endstone reload：Provider 与旧 host 留着，靠原生回调槽换到新模块。
+            // Endstone reload：Loader 与旧 host 留着，靠原生回调槽换到新模块。
             s_loggerFactory?.CreateLogger("Hosihikari")
-                .LogInformation("复用已有核心：Provider 保持，子插件由新 loader 重新交付");
+                .LogInformation("复用已有核心：Loader 保持，子插件由新 loader 重新交付");
             return 0;
         }
 
@@ -308,14 +309,14 @@ public static class NativeEntry
                 .AddSingleton(s_loggerFactory!)
                 .BuildServiceProvider();
 
-            s_host = new PluginManagerHost(
+            s_host = new PluginManager(
                 Path.Combine(root, "plugins"),
                 Path.Combine(root, "data", "hosihikari"),
                 Path.Combine(root, "config", "hosihikari"),
                 entry => logger.LogError("加载问题：{Entry}", entry),
                 services,
                 ForwardRemoval);
-            s_host.AddProvider(new AssemblyPluginProvider());
+            s_host.RegisterLoader(new AssemblyPluginLoader());
 
             if (scanPlugins)
             {

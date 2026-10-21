@@ -1,4 +1,4 @@
-namespace Hosihikari.PluginManagement;
+namespace Hosihikari.Internal;
 
 /// <summary>拓扑序加载、反序卸载、不自动级联（ADR-0004）。</summary>
 internal static class DependencyGraph
@@ -45,7 +45,7 @@ internal static class DependencyGraph
         {
             // 对框架自身的依赖在哪个拓扑下都成立 —— 我们就是正在跑的那个（ADR-0006）。
             // 父级态下这条依赖是给父级的计划用的，自持态下没有这个包，但它同样已经在了。
-            if (dependency.Name == PluginContract.ShimModName)
+            if (dependency.Name == PluginContractInfo.ParentName)
             {
                 continue;
             }

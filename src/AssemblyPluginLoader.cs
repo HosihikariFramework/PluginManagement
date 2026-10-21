@@ -1,12 +1,13 @@
 using System.Reflection;
+using Hosihikari.Internal;
 using McMaster.NETCore.Plugins;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
-namespace Hosihikari.PluginManagement;
+namespace Hosihikari;
 
-/// <summary>内置的程序集型 Provider（ADR-0002）。每个插件一个 collectible ALC，契约走共享层（ADR-0004 / ADR-0019）。</summary>
-public sealed class AssemblyPluginProvider(params Assembly[] sharedSources) : IPluginProvider
+/// <summary>内置的程序集型加载器（ADR-0002）。每个插件一个 collectible ALC，契约走共享层（ADR-0004 / ADR-0019）。</summary>
+public sealed class AssemblyPluginLoader(params Assembly[] sharedSources) : IPluginLoader
 {
     // 共享层 = 契约 + 契约引用的抽象包 + 当前载体的绑定程序集（ADR-0007 / ADR-0019）。
     // 两侧的类型必须同身份，转型与实现接口才成立；插件包里也不许有这些的副本。
@@ -39,16 +40,16 @@ public sealed class AssemblyPluginProvider(params Assembly[] sharedSources) : IP
         .. sharedSources.SelectMany(source => source.GetExportedTypes()),
     ];
 
-    public string Type => "assembly";
+    public string Id => "assembly";
 
-    public bool CanLoad(PluginManifest manifest) => manifest.Provider == Type;
+    public bool CanLoad(PluginManifest manifest) => manifest.Loader == Id;
 
-    public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context)
+    public PluginHandle? Load(PluginManifest manifest, string packageDirectory, IPluginContext context)
     {
-        var entryPath = Path.Combine(packageDirectory, manifest.Entry);
+        var entryPath = Path.Combine(packageDirectory, manifest.EntryPath);
         if (!File.Exists(entryPath))
         {
-            context.Logger.LogError("{Name}: 入口 {Entry} 不在包里", manifest.Name, manifest.Entry);
+            context.Logger.LogError("{Name}: 入口 {Entry} 不在包里", manifest.Name, manifest.EntryPath);
             return null;
         }
 
@@ -59,7 +60,7 @@ public sealed class AssemblyPluginProvider(params Assembly[] sharedSources) : IP
             sharedTypes: _sharedTypes,
             configure: config => config.PreferSharedTypes = true);
 
-        // 入口由程序集上的特性声明 —— 怎么找到入口是本 Provider 的事（ADR-0008 / ADR-0010）。
+        // 入口由程序集上的特性声明 —— 怎么找到入口是本加载器的事（ADR-0008 / ADR-0010）。
         var assembly = loader.LoadDefaultAssembly();
         var declared = assembly.GetCustomAttributesData().Count(IsEntryPoint);
         if (declared != 1)
@@ -73,23 +74,10 @@ public sealed class AssemblyPluginProvider(params Assembly[] sharedSources) : IP
         }
 
         var entryPoint = assembly.GetCustomAttribute<EntryPointAttributeBase>()!;
-        return new AssemblyPluginInstance(entryPoint.CreateInstance(), loader);
+        return new AssemblyPluginHandle(entryPoint.CreateInstance(), loader);
     }
 
     /// <summary>在已加载的共享层里按类型认入口声明（ADR-0008）。</summary>
     private static bool IsEntryPoint(CustomAttributeData attribute) =>
         typeof(EntryPointAttributeBase).IsAssignableFrom(attribute.AttributeType);
-}
-
-internal sealed class AssemblyPluginInstance(IPlugin plugin, PluginLoader loader) : PluginInstance(plugin)
-{
-    private PluginLoader? _loader = loader;
-
-    public override Func<bool> Release()
-    {
-        var weakContext = new WeakReference(_loader!.LoadContext);
-        _loader.Dispose();
-        _loader = null;
-        return () => !weakContext.IsAlive;
-    }
 }

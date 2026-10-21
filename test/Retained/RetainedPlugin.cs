@@ -6,7 +6,7 @@ using Hosihikari.Bindings;
 namespace Retained;
 
 /// <summary>
-/// 把上下文交到共享层，模拟父级或 Provider 在卸载后仍留着它。
+/// 把上下文交到共享层，模拟父级或 Loader 在卸载后仍留着它。
 /// 启用抛出让框架走故障卸载；随后 ALC 能不能回收，取决于上下文有没有间接攥住实例。
 /// </summary>
 public sealed class RetainedPlugin : IPlugin

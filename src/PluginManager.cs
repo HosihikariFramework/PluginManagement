@@ -4,18 +4,19 @@ using Hocon.Extensions.Configuration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Hosihikari.Internal;
 
-namespace Hosihikari.PluginManagement;
+namespace Hosihikari;
 
-/// <summary>核心：发现、依赖图、Provider 选型、生命周期驱动、失败隔离（ADR-0009 / 0010）。</summary>
-public sealed class PluginManagerHost
+/// <summary>核心：发现、依赖图、加载器选型、生命周期驱动、失败隔离（ADR-0009 / 0010）。</summary>
+public sealed class PluginManager
 {
     private readonly string _pluginsRoot;
     private readonly string _dataRoot;
     private readonly string _configRoot;
-    private readonly Action<string> _report;
-    private readonly IServiceProvider? _services;
-    private readonly Action<string>? _removed;
+    private readonly Action<string> _reportFault;
+    private readonly IServiceProvider? _carrierServices;
+    private readonly Action<string>? _onRemoved;
     private readonly object _gate = new();
     private readonly ILoggerFactory _loggerFactory;
     private readonly IEventBus _events;
@@ -24,25 +25,25 @@ public sealed class PluginManagerHost
     private readonly Dictionary<string, Slot> _slots = new(StringComparer.Ordinal);
     private readonly Dictionary<Guid, string> _loading = [];
     private readonly Dictionary<Guid, string> _pendingFaults = [];
-    private readonly HashSet<Guid> _providerIds = [];
-    private readonly Dictionary<Guid, List<IPluginProvider>> _registeredProviders = [];
-    private readonly List<IPluginProvider> _providers = [];
+    private readonly HashSet<Guid> _loaderIds = [];
+    private readonly Dictionary<Guid, List<IPluginLoader>> _registeredLoaders = [];
+    private readonly List<IPluginLoader> _loaders = [];
 
-    public PluginManagerHost(
+    public PluginManager(
         string pluginsRoot,
         string dataRoot,
         string configRoot,
-        Action<string> report,
-        IServiceProvider? services = null,
-        Action<string>? removed = null)
+        Action<string> reportFault,
+        IServiceProvider? carrierServices = null,
+        Action<string>? onRemoved = null)
     {
         _pluginsRoot = pluginsRoot;
         _dataRoot = dataRoot;
         _configRoot = configRoot;
-        _report = report;
-        _services = services;
-        _removed = removed;
-        _loggerFactory = services?.GetService(typeof(ILoggerFactory)) as ILoggerFactory
+        _reportFault = reportFault;
+        _carrierServices = carrierServices;
+        _onRemoved = onRemoved;
+        _loggerFactory = carrierServices?.GetService(typeof(ILoggerFactory)) as ILoggerFactory
                          ?? NullLoggerFactory.Instance;
         _events = new EventBus(_loggerFactory.CreateLogger("Hosihikari.Events"));
         _scheduler = new Scheduler(_loggerFactory.CreateLogger("Hosihikari.Scheduler"));
@@ -53,57 +54,57 @@ public sealed class PluginManagerHost
     }
 
     /// <summary>
-    /// 登记一个 Provider。同名（<see cref="IPluginProvider.Type"/>）的已经在了就拒掉后一个，
+    /// 登记一个加载器。同名（<see cref="IPluginLoader.Id"/>）的已经在了就拒掉后一个，
     /// 并把冲突报出来（ADR-0009）—— 静默让后一个落空的话，写它的那个人会以为自己的包被接管了。
     /// </summary>
     /// <returns>登记成功为 <c>true</c>；同名的已在则为 <c>false</c>，先来的那个不变。</returns>
-    public bool AddProvider(IPluginProvider provider)
+    public bool RegisterLoader(IPluginLoader loader)
     {
-        var added = TryAddProvider(provider, out var problem);
+        var added = TryAddLoader(loader, out var problem);
         if (problem is not null)
         {
-            _report(problem);
+            _reportFault(problem);
         }
 
         return added;
     }
 
     /// <summary>
-    /// 把一次登记归到具体的装载实例上；重载时据此保留 Provider，不保留普通子插件。
+    /// 把一次登记归到具体的装载实例上；重载时据此保留加载器，不保留普通子插件。
     /// </summary>
-    internal void MarkProvider(Guid instanceId, IPluginProvider provider)
+    internal void MarkLoader(Guid instanceId, IPluginLoader loader)
     {
         lock (_gate)
         {
             if (_slots.Values.FirstOrDefault(slot => slot.Id == instanceId) is { } loaded)
             {
-                loaded.IsProvider = true;
+                loaded.IsLoader = true;
             }
             else
             {
-                _providerIds.Add(instanceId);
+                _loaderIds.Add(instanceId);
             }
 
-            if (!_registeredProviders.TryGetValue(instanceId, out var registered))
+            if (!_registeredLoaders.TryGetValue(instanceId, out var registered))
             {
-                _registeredProviders[instanceId] = registered = [];
+                _registeredLoaders[instanceId] = registered = [];
             }
 
-            registered.Add(provider);
+            registered.Add(loader);
         }
     }
 
-    /// <summary>加载失败时撤掉本次装载登记过的 Provider，别让死包继续接管路由。</summary>
-    private void RemoveProviders(Guid instanceId)
+    /// <summary>加载失败时撤掉本次装载登记过的加载器，别让死包继续接管路由。</summary>
+    private void RemoveLoaders(Guid instanceId)
     {
         lock (_gate)
         {
-            _providerIds.Remove(instanceId);
-            if (_registeredProviders.Remove(instanceId, out var registered))
+            _loaderIds.Remove(instanceId);
+            if (_registeredLoaders.Remove(instanceId, out var registered))
             {
-                foreach (var provider in registered)
+                foreach (var loader in registered)
                 {
-                    _providers.Remove(provider);
+                    _loaders.Remove(loader);
                 }
             }
         }
@@ -112,17 +113,17 @@ public sealed class PluginManagerHost
     /// <summary>
     /// 不向父级回报的登记。加载路径持锁时走这里，冲突文本交给加载报告统一带出去。
     /// </summary>
-    internal bool TryAddProvider(IPluginProvider provider, out string? problem)
+    internal bool TryAddLoader(IPluginLoader loader, out string? problem)
     {
-        var existing = _providers.FirstOrDefault(registered => registered.Type == provider.Type);
+        var existing = _loaders.FirstOrDefault(registered => registered.Id == loader.Id);
         if (existing is not null)
         {
-            problem = $"{provider.Type}: 已经有 {existing.GetType().Name} 处理这个类型，"
-                      + $"{provider.GetType().Name} 被拒 —— 插件类型名必须唯一";
+            problem = $"{loader.Id}: 已经有 {existing.GetType().Name} 处理这个种类，"
+                      + $"{loader.GetType().Name} 被拒 —— 插件种类名必须唯一";
             return false;
         }
 
-        _providers.Add(provider);
+        _loaders.Add(loader);
         problem = null;
         return true;
     }
@@ -160,7 +161,7 @@ public sealed class PluginManagerHost
                     }
 
                     var missing = package.Manifest.Dependencies
-                        .Where(dependency => dependency.Name != PluginContract.ShimModName)
+                        .Where(dependency => dependency.Name != PluginContractInfo.ParentName)
                         .Where(dependency => !_slots.TryGetValue(dependency.Name, out var slot)
                                              || slot.State != PluginState.Loaded)
                         .Select(dependency => dependency.Name)
@@ -193,7 +194,7 @@ public sealed class PluginManagerHost
     {
         var reports = new List<string>();
         var result = false;
-        string? reusedProvider = null;
+        string? reusedLoader = null;
         try
         {
             lock (_gate)
@@ -204,9 +205,9 @@ public sealed class PluginManagerHost
                 }
                 else if (_slots.TryGetValue(package.Manifest.Name, out var slot))
                 {
-                    if (slot.IsProvider && slot.State == PluginState.Loaded)
+                    if (slot.IsLoader && slot.State == PluginState.Loaded)
                     {
-                        reusedProvider = package.Manifest.Name;
+                        reusedLoader = package.Manifest.Name;
                         result = true;
                     }
                     else
@@ -232,10 +233,10 @@ public sealed class PluginManagerHost
         }
 
         // 父级的日志回调可能拿父级的锁；出了 _gate 再写，避免与卸载路径互相等。
-        if (reusedProvider is not null)
+        if (reusedLoader is not null)
         {
             _loggerFactory.CreateLogger("Hosihikari")
-                .LogInformation("{Name}: Provider 已加载，复用", reusedProvider);
+                .LogInformation("{Name}: 加载器已加载，复用", reusedLoader);
         }
 
         return result;
@@ -320,8 +321,8 @@ public sealed class PluginManagerHost
         try
         {
             var result = enable
-                ? slot.Instance!.Plugin.OnEnable()
-                : slot.Instance!.Plugin.OnDisable();
+                ? slot.Handle!.Plugin!.OnEnable()
+                : slot.Handle!.Plugin!.OnDisable();
             if (!result.Allowed)
             {
                 if (wasEnabled && !enable)
@@ -363,9 +364,9 @@ public sealed class PluginManagerHost
         UnloadResult result;
         lock (_gate)
         {
-            // Provider 的登记不能撤销：它的类型住在自己的 ALC 里，放掉实例会让路由指向死代码。
-            result = _slots.TryGetValue(name, out var slot) && slot.IsProvider
-                ? UnloadResult.Failed($"{name}: Provider 登记不能撤销；更换 Provider 需要重启服务端")
+            // 加载器的登记不能撤销：它的类型住在自己的 ALC 里，放掉实例会让路由指向死代码。
+            result = _slots.TryGetValue(name, out var slot) && slot.IsLoader
+                ? UnloadResult.Failed($"{name}: 加载器登记不能撤销；更换加载器需要重启服务端")
                 : UnloadLocked(name, ref reports);
         }
 
@@ -378,7 +379,7 @@ public sealed class PluginManagerHost
     {
         foreach (var dependency in manifest.Dependencies)
         {
-            if (dependency.Name == PluginContract.ShimModName)
+            if (dependency.Name == PluginContractInfo.ParentName)
             {
                 continue;
             }
@@ -398,7 +399,7 @@ public sealed class PluginManagerHost
     }
 
     /// <summary>
-    /// 载体重载前的子插件回收。Provider 包按 ADR-0002 不能撤销登记，跨 reload 保留；
+    /// 载体重载前的子插件回收。Loader 包按 ADR-0002 不能撤销登记，跨 reload 保留；
     /// 它们造出来的实例与路由也留着，供新 loader 直接复用。
     /// </summary>
     internal void UnloadChildren()
@@ -410,7 +411,7 @@ public sealed class PluginManagerHost
             {
                 foreach (var name in _slots.Keys.Reverse().ToArray())
                 {
-                    if (_slots.TryGetValue(name, out var slot) && slot.IsProvider)
+                    if (_slots.TryGetValue(name, out var slot) && slot.IsLoader)
                     {
                         continue;
                     }
@@ -460,10 +461,10 @@ public sealed class PluginManagerHost
             }
         }
 
-        // 到这里 slot 里已经没有指向实例与 ALC 的字段了，可以验回收。
-        if (!Collected(slot.Verify!))
+        // 到这里 slot 里已经没有指向插件与 ALC 的字段了，可以验回收。
+        if (!Collected(slot.Handle!))
         {
-            // 说"回收"而不是"ALC"：释放句柄长什么样是 Provider 自己的事（ADR-0010）。
+            // 说"回收"而不是"ALC"：释放句柄长什么样是 Loader 自己的事（ADR-0010）。
             return UnloadResult.Failed($"{name} 已经放下，但回收验证没通过 —— 再卸载一次会重新验证");
         }
 
@@ -480,12 +481,12 @@ public sealed class PluginManagerHost
 
         foreach (var report in reports)
         {
-            _report(report);
+            _reportFault(report);
         }
     }
 
     /// <summary>
-    /// 故障：钩子抛出，或 Provider 在钩子之外发现插件死了（ADR-0030）。
+    /// 故障：钩子抛出，或 Loader 在钩子之外发现插件死了（ADR-0030）。
     /// 由宿主发起卸载；成功后才通知载体摘账。
     /// 故障只属于发起它的那个实例：报告在锁外发，期间同名插件可能已经重新装载，
     /// 按名字找会把健康的新实例连坐卸掉。所以这里认的是装载时发给上下文的编号。
@@ -527,30 +528,31 @@ public sealed class PluginManagerHost
 
         if (result.Released)
         {
-            _removed?.Invoke(name);
+            _onRemoved?.Invoke(name);
         }
         else
         {
-            _report($"{name}: 故障卸载没完成 —— {result.Error}");
+            _reportFault($"{name}: 故障卸载没完成 —— {result.Error}");
         }
     }
 
     /// <summary>
-    /// 停用、卸载、放下实例与作用域，只留下验证器。单独一个不内联的方法，是为了让本方法返回后，
-    /// 实例与它的 ALC 在栈上再无强引用 —— 回收验证的前提（ADR-0023）。
-    /// 状态与字段一起改完：表里留着实例等于把 ALC 钉死。
+    /// 停用、卸载、放下句柄与作用域，只留下回收验证。单独一个不内联的方法，是为了让本方法返回后，
+    /// 插件与它的 ALC 在栈上再无强引用 —— 回收验证的前提（ADR-0023）。
+    /// 状态与字段一起改完：表里留着插件等于把 ALC 钉死。
     /// 停用被拒绝时返回原因，此时什么都不放开（ADR-0030）。
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private string? Detach(Slot slot, ref List<string>? reports)
     {
-        var instance = slot.Instance!;
+        var handle = slot.Handle!;
+        var plugin = handle.Plugin!;
         var scope = slot.Scope!;
         var wasEnabled = scope.Close();
 
         try
         {
-            var result = instance.Plugin.OnDisable();
+            var result = plugin.OnDisable();
             if (!result.Allowed)
             {
                 if (wasEnabled)
@@ -568,7 +570,7 @@ public sealed class PluginManagerHost
 
         try
         {
-            instance.Plugin.OnUnload();
+            plugin.OnUnload();
         }
         catch (Exception ex)
         {
@@ -578,32 +580,30 @@ public sealed class PluginManagerHost
         // 作者没退订的订阅、没释放的定时器，在这里一并收回 —— 否则它们把 ALC 钉在共享服务上。
         scope.ReleaseAll();
 
-        var verify = instance.Release();
+        try
+        {
+            handle.Unload();
+        }
+        catch (Exception ex)
+        {
+            // 放下失败仍要继续验回收：句柄可能已经放掉一部分，状态机照实记录。
+            (reports ??= []).Add($"{slot.Manifest.Name}: 放下句柄抛出 —— {ex.Demystify()}");
+        }
 
-        slot.Verify = verify;
-        slot.Instance = null;
         slot.Scope = null;
         slot.State = PluginState.Detached;
         return null;
     }
 
-    /// <summary>回收验证：只攥着验证器，它内部是一个 WeakReference。</summary>
+    /// <summary>回收验证：句柄只攥着 WeakReference，不钉住 ALC。</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool Collected(Func<bool> verify)
-    {
-        for (var i = 0; i < 100 && !verify(); i++)
-        {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-        }
-
-        return verify();
-    }
+    private static bool Collected(PluginHandle handle) =>
+        handle.WaitForUnloadAsync().GetAwaiter().GetResult();
 
     /// <summary>
     /// 包内默认 → 包外覆盖 → 环境变量，后写覆盖先写（ADR-0018）。
     /// 三段都可选 —— 完全不带配置的插件是正常情况（ADR-0009）。
-    /// 分层**必须**走 provider 链：HOCON 的 <c>include</c> 在这条路径上会被静默忽略。
+    /// 分层**必须**走配置源链：HOCON 的 <c>include</c> 在这条路径上会被静默忽略。
     /// </summary>
     private IConfiguration BuildConfiguration(string name, string packageDirectory) =>
         new ConfigurationBuilder()
@@ -619,17 +619,17 @@ public sealed class PluginManagerHost
         // 先建这一格，让上下文报告故障时认的是本次装载，而不是后面可能顶替它的同名实例。
         var slot = new Slot(manifest);
         _loading[slot.Id] = manifest.Name;
-        PluginInstance? instance = null;
+        PluginHandle? handle = null;
         var loadStarted = false;
         var enableStarted = false;
         var enabled = false;
         var loaded = false;
         try
         {
-            var provider = _providers.FirstOrDefault(p => p.CanLoad(manifest));
-            if (provider is null)
+            var loader = _loaders.FirstOrDefault(candidate => candidate.CanLoad(manifest));
+            if (loader is null)
             {
-                reports.Add($"{manifest.Name}: 没有能处理 provider={manifest.Provider} 的 Provider");
+                reports.Add($"{manifest.Name}: 没有能处理 loader={manifest.Loader} 的加载器");
                 return false;
             }
 
@@ -642,20 +642,20 @@ public sealed class PluginManagerHost
                 _loggerFactory.CreateLogger(manifest.Name),
                 BuildConfiguration(manifest.Name, package.Directory),
                 scope,
-                _services ?? PluginContext.Empty,
+                _carrierServices ?? PluginContext.Empty,
                 this,
                 slot.Id,
                 reports.Add);
 
-            instance = provider.Load(manifest, package.Directory, context);
-            if (instance is null)
+            handle = loader.Load(manifest, package.Directory, context);
+            if (handle?.Plugin is null)
             {
                 reports.Add($"{manifest.Name}: 加载失败");
                 return false;
             }
 
             loadStarted = true;
-            instance.Plugin.OnLoad(context);
+            handle.Plugin.OnLoad(context);
             if (_pendingFaults.TryGetValue(slot.Id, out var loadFault))
             {
                 reports.Add($"{manifest.Name}: 故障 —— {loadFault}");
@@ -665,7 +665,7 @@ public sealed class PluginManagerHost
             if (enable)
             {
                 enableStarted = true;
-                var result = instance.Plugin.OnEnable();
+                var result = handle.Plugin.OnEnable();
                 if (!result.Allowed)
                 {
                     reports.Add($"{manifest.Name}: 启用被拒绝 —— {result.Reason ?? "未给原因"}（留在册、未启用）");
@@ -684,9 +684,9 @@ public sealed class PluginManagerHost
                 return false;
             }
 
-            slot.IsProvider = _providerIds.Remove(slot.Id);
+            slot.IsLoader = _loaderIds.Remove(slot.Id);
             slot.Enabled = enabled;
-            slot.Instance = instance;
+            slot.Handle = handle;
             slot.Scope = scope;
             _slots[manifest.Name] = slot;
             loaded = true;
@@ -703,28 +703,28 @@ public sealed class PluginManagerHost
             _pendingFaults.Remove(slot.Id);
             if (!loaded)
             {
-                RemoveProviders(slot.Id);
+                RemoveLoaders(slot.Id);
             }
             else
             {
-                _providerIds.Remove(slot.Id);
+                _loaderIds.Remove(slot.Id);
             }
             if (!loaded)
             {
                 if (enableStarted)
                 {
-                    Cleanup(() => instance!.Plugin.OnDisable());
+                    Cleanup(() => handle!.Plugin!.OnDisable());
                 }
 
                 if (loadStarted)
                 {
-                    Cleanup(() => instance!.Plugin.OnUnload());
+                    Cleanup(() => handle!.Plugin!.OnUnload());
                 }
 
                 Cleanup(scope.ReleaseAll);
-                if (instance is not null)
+                if (handle is not null)
                 {
-                    Cleanup(() => instance.Release());
+                    Cleanup(handle.Unload);
                 }
             }
         }
@@ -743,7 +743,7 @@ public sealed class PluginManagerHost
     }
 
     /// <summary>
-    /// 表里的一格。两段式卸载要求它在状态切换时把指向实例与 ALC 的字段一并清掉（ADR-0023）——
+    /// 表里的一格。两段式卸载要求它在状态切换时把指向插件与 ALC 的字段一并清掉（ADR-0023）——
     /// 所以这里放的是可空字段而不是 record。
     /// </summary>
     private sealed class Slot(PluginManifest manifest)
@@ -755,88 +755,15 @@ public sealed class PluginManagerHost
 
         public PluginState State { get; set; } = PluginState.Loaded;
 
-        /// <summary>只在 <see cref="PluginState.Loaded"/> 时在场。</summary>
-        public PluginInstance? Instance { get; set; }
+        /// <summary>在场时指向插件；放下后仍留着，用来做回收验证（它只攥一个 WeakReference）。</summary>
+        public PluginHandle? Handle { get; set; }
 
         public PluginScope? Scope { get; set; }
 
-        /// <summary>只在 <see cref="PluginState.Detached"/> 时在场。它只攥着一个 WeakReference，不钉住 ALC。</summary>
-        public Func<bool>? Verify { get; set; }
-
-        /// <summary>Provider 包；载体重载时保留，供新 loader 直接复用。</summary>
-        public bool IsProvider { get; set; }
+        /// <summary>Loader 包；载体重载时保留，供新 loader 直接复用。</summary>
+        public bool IsLoader { get; set; }
 
         /// <summary>启用状态；重复 Enable/Disable 不能把闸门留在错误的一侧。</summary>
         public bool Enabled { get; set; }
-    }
-}
-
-/// <summary>插件在框架里的状态。</summary>
-internal enum PluginState
-{
-    /// <summary>在场：实例已建、钩子已挂，事件订阅与定时器归它的作用域管。</summary>
-    Loaded,
-
-    /// <summary>已放下：实例与作用域都放开了，只等 ALC 被真正回收。回收没通过前它仍占着内存（ADR-0004）。</summary>
-    Detached,
-}
-
-internal sealed class PluginContext(
-    string name,
-    string packageDirectory,
-    string dataDirectory,
-    ILogger logger,
-    IConfiguration configuration,
-    PluginScope scope,
-    IServiceProvider services,
-    PluginManagerHost host,
-    Guid instanceId,
-    Action<string> report) : IPluginContext
-{
-    internal static readonly IServiceProvider Empty = new EmptyServices();
-
-    public string Name => name;
-
-    public string PackageDirectory => packageDirectory;
-
-    public string DataDirectory => dataDirectory;
-
-    public ILogger Logger => logger;
-
-    public IConfiguration Configuration => configuration;
-
-    public IEventBus Events => scope;
-
-    public IScheduler Scheduler => scope;
-
-    public IPluginServiceRegistry PluginServices => scope;
-
-    public IServiceProvider Services => services;
-
-    /// <summary>Provider 在钩子之外发现插件死了时走这里（ADR-0030）。</summary>
-    public void ReportFault(string reason) => host.ReportFault(name, instanceId, reason);
-
-    /// <summary>Provider 是个插件包，装载时用这个把自己交出去（ADR-0002）。</summary>
-    public void RegisterProvider(IPluginProvider provider) => TryRegisterProvider(provider);
-
-    public bool TryRegisterProvider(IPluginProvider provider)
-    {
-        if (!host.TryAddProvider(provider, out var problem))
-        {
-            if (problem is not null)
-            {
-                report(problem);
-            }
-
-            return false;
-        }
-
-        host.MarkProvider(instanceId, provider);
-        return true;
-    }
-
-    private sealed class EmptyServices : IServiceProvider
-    {
-        public object? GetService(Type serviceType) => null;
     }
 }

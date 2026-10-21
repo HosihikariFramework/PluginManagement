@@ -7,13 +7,13 @@ order, puts each one in its own collectible ALC, drives its lifecycle, and — w
 takes down only that plugin.
 
 The plugin contract lives in another repository and another package:
-[`Hosihikari.Abstractions`](https://www.nuget.org/packages/Hosihikari.Abstractions).
+[`Hosihikari.Plugin.Abstractions`](https://www.nuget.org/packages/Hosihikari.Plugin.Abstractions).
 
 ## What is in this repository
 
 | | |
 |---|---|
-| `src/` | The core: discovery, dependency graph, the assembly Provider, lifecycle, failure isolation |
+| `src/` | The core: discovery, dependency graph, the assembly loader, lifecycle, failure isolation |
 | `tools/Pack/` | The packaging tool: assembles plugin packages and rejects the rules whose failure would otherwise surface far from their cause |
 | `test/Foo`, `test/Bar` | Two test plugins — and the packaging tool's first two users |
 | `host/` | The assertion host: a plain .NET console, **touching no BDS, no Shim, no carrier** |
@@ -54,8 +54,9 @@ For a source deployment, `bash ./pack.sh <version>` builds the same archive loca
 ## What is not here
 
 - **The Shim** — the native layer that hosts the CLR inside the BDS process — is its own repository.
-- **The out-of-process bridge (exception first-class provider)** — RpcProvider is an official provider;
-  it runs plugins in child processes instead of AOT-compiling source to IL. The core knows the Provider contract and nothing about the child process beyond it.
+- **The out-of-process bridge** — RpcLoader is an official loader; it runs plugins in child processes
+  instead of AOT-compiling source to IL. The core knows the `IPluginLoader` contract and nothing about
+  the child process beyond it.
 - **Any BDS-specific capability** — worlds, entities, commands and game events are outside the
   framework's capability surface.
 

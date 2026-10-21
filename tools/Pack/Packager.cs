@@ -4,7 +4,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Hosihikari;
 
-namespace Hosihikari.PluginManagement.Pack;
+namespace Hosihikari.Internal.Pack;
 
 /// <summary>一次打包的结果。</summary>
 /// <param name="Succeeded">是否成功。</param>
@@ -22,7 +22,7 @@ public static class Packager
     /// 装配一个包。
     ///
     /// <paramref name="sharedLayer"/> 是目标载体的共享层程序集名清单，与运行期
-    /// <c>AssemblyPluginProvider</c> 拿到的那份必须同源（ADR-0021 / 0026）。这里要的是文件名，
+    /// <c>AssemblyPluginLoader</c> 拿到的那份必须同源（ADR-0021 / 0026）。这里要的是文件名，
     /// 因为打包期只看得见构建输出里的文件名。
     /// </summary>
     public static PackResult Pack(
@@ -60,6 +60,11 @@ public static class Packager
             return new PackResult(false, null, problems);
         }
 
+        if (ManifestReader.LegacyExtraInfoMessage(manifest) is { } legacy)
+        {
+            problems.Add(legacy);
+        }
+
         if (!DependencyVersion.TryValidateManifest(manifest, out var versionProblem))
         {
             problems.Add(versionProblem!);
@@ -78,22 +83,22 @@ public static class Packager
         }
 
         // 契约主版本（ADR-0012）。
-        if (manifest.Api != PluginContract.ApiVersion)
+        if (manifest.ApiVersion != PluginContractInfo.CurrentApiVersion)
         {
-            problems.Add($"清单 api 是 {manifest.Api ?? "未声明"}，当前契约是 {PluginContract.ApiVersion}");
+            problems.Add($"清单 api_version 是 {manifest.ApiVersion ?? "未声明"}，当前契约是 {PluginContractInfo.CurrentApiVersion}");
         }
 
         // 清单 schema 版本（ADR-0012）。
-        if (manifest.FormatVersion != PluginContract.FormatVersion)
+        if (manifest.ManifestVersion != PluginContractInfo.CurrentManifestVersion)
         {
-            problems.Add($"清单 format_version 是 {manifest.FormatVersion ?? "未声明"}，当前是 {PluginContract.FormatVersion}");
+            problems.Add($"清单 manifest_version 是 {manifest.ManifestVersion ?? "未声明"}，当前是 {PluginContractInfo.CurrentManifestVersion}");
         }
 
         // type 是父级的路由键（ADR-0006）。写错的包在父级态下根本到不了我们手里，
         // 而且失败点离病因很远 —— 所以在这里就拦下。
-        if (manifest.Type != PluginContract.ShimModName)
+        if (manifest.ParentName != PluginContractInfo.ParentName)
         {
-            problems.Add($"清单 type 必须是 {PluginContract.ShimModName}，实际 {(string.IsNullOrWhiteSpace(manifest.Type) ? "未声明" : manifest.Type)}");
+            problems.Add($"清单 type 必须是 {PluginContractInfo.ParentName}，实际 {(string.IsNullOrWhiteSpace(manifest.ParentName) ? "未声明" : manifest.ParentName)}");
         }
 
         // 共享层副本（ADR-0004 / 0019）—— 这条是静默失败的那条，所以放在打包期拦。
@@ -113,17 +118,17 @@ public static class Packager
 
         // 入口必须在包内（ADR-0006）。出界时后面的存在性与入口声明检查都不做 ——
         // 它们会去读包外的文件。
-        if (!ManifestReader.IsEntryContained(sourceDirectory, manifest.Entry))
+        if (!ManifestReader.IsEntryContained(sourceDirectory, manifest.EntryPath))
         {
-            problems.Add($"清单 entry 必须是包内相对路径（实际 {manifest.Entry}）");
+            problems.Add($"清单 entry 必须是包内相对路径（实际 {manifest.EntryPath}）");
         }
         // 入口（ADR-0008）。编译器已经保证它与 IPlugin 和有无参构造是一致的，这里只确认它存在。
-        else if (manifest.Provider == "assembly")
+        else if (manifest.Loader == "assembly")
         {
-            var entryPath = Path.Combine(sourceDirectory, manifest.Entry);
+            var entryPath = Path.Combine(sourceDirectory, manifest.EntryPath);
             if (!File.Exists(entryPath))
             {
-                problems.Add($"清单 entry 指向的 {manifest.Entry} 不在构建输出里");
+                problems.Add($"清单 entry 指向的 {manifest.EntryPath} 不在构建输出里");
             }
             else if (!DeclaresEntryPoint(entryPath, problems))
             {
@@ -207,7 +212,7 @@ public static class Packager
                 StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
         }
 
-        if (manifest.Provider == "csharp")
+        if (manifest.Loader == "csharp")
         {
             ReadSourcePackages(sourceDirectory, manifest, packages, problems);
         }
@@ -334,7 +339,7 @@ public static class Packager
             }
         }
 
-        var entry = manifest.Entry;
+        var entry = manifest.EntryPath;
         var entryPath = Full(entry);
         if (entryPath.StartsWith(prefix, comparison) && !File.Exists(entryPath))
         {
@@ -525,7 +530,7 @@ public static class Packager
             var full = Path.GetFullPath(entryPath);
             var references = Directory.EnumerateFiles(Path.GetDirectoryName(full)!, "*.dll")
                 // 契约不在构建输出里（复制进去会被这条规则自己拦下），所以显式补上。
-                .Append(typeof(PluginContract).Assembly.Location)
+                .Append(typeof(PluginContractInfo).Assembly.Location)
                 .Concat(((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator));
 
             using var metadata = new MetadataLoadContext(new PathAssemblyResolver(references));

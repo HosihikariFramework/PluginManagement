@@ -1,4 +1,4 @@
-namespace Hosihikari.PluginManagement;
+namespace Hosihikari.Internal;
 
 /// <summary>
 /// 插件服务的共享登记处（ADR-0027）。键是类型 —— 服务类型来自共享层，所以两边看到同一个类型对象
@@ -7,7 +7,7 @@ namespace Hosihikari.PluginManagement;
 /// </summary>
 internal sealed class PluginServiceRegistry
 {
-    private readonly Dictionary<Type, object> _services = [];
+    private readonly Dictionary<Type, object> _carrierServices = [];
     private readonly Lock _gate = new();
 
     internal bool Register<T>(T service) where T : class
@@ -15,7 +15,7 @@ internal sealed class PluginServiceRegistry
         lock (_gate)
         {
             // 先来的留着：两插件抢同一个服务是配置冲突，要让双方都看得见（ADR-0009）。
-            return _services.TryAdd(typeof(T), service);
+            return _carrierServices.TryAdd(typeof(T), service);
         }
     }
 
@@ -23,7 +23,7 @@ internal sealed class PluginServiceRegistry
     {
         lock (_gate)
         {
-            return _services.TryGetValue(typeof(T), out var service) ? (T)service : null;
+            return _carrierServices.TryGetValue(typeof(T), out var service) ? (T)service : null;
         }
     }
 
@@ -31,7 +31,7 @@ internal sealed class PluginServiceRegistry
     {
         lock (_gate)
         {
-            _services.Remove(type);
+            _carrierServices.Remove(type);
         }
     }
 }

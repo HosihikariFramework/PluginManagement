@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Hosihikari.PluginManagement;
+namespace Hosihikari.Internal;
 
 /// <summary>读插件包目录里的 <c>manifest.json</c>（ADR-0006）。</summary>
 internal static class ManifestReader
@@ -63,39 +63,46 @@ internal static class ManifestReader
                 return null;
             }
 
-            if (string.IsNullOrWhiteSpace(manifest.Entry))
+            if (string.IsNullOrWhiteSpace(manifest.EntryPath))
             {
                 report($"{folderName}: 清单缺少 entry");
                 return null;
             }
 
+            // ADR-0040 硬切旧字段：写旧键的包在载入前就给出改名提示，别让它落到加载器选型或版本比较上。
+            if (LegacyExtraInfoMessage(manifest) is { } legacy)
+            {
+                report($"{folderName}: {legacy}");
+                return null;
+            }
+
             // entry 是包内相对路径（ADR-0006）。绝对路径或 .. 会把包外的文件装进插件的 ALC，
             // "一个目录就是一个包"随之不成立。
-            if (!IsEntryContained(directory, manifest.Entry))
+            if (!IsEntryContained(directory, manifest.EntryPath))
             {
-                report($"{folderName}: entry 必须是包内相对路径（实际 {manifest.Entry}）");
+                report($"{folderName}: entry 必须是包内相对路径（实际 {manifest.EntryPath}）");
                 return null;
             }
 
             // type 是父级的路由键。写错的包不会被父级交过来，所以在自持态下也一并拦下 ——
             // 否则同一个包换一个拓扑才失败，而那是最难查的一类（ADR-0012）。
-            if (manifest.Type != PluginContract.ShimModName)
+            if (manifest.ParentName != PluginContractInfo.ParentName)
             {
-                var actual = string.IsNullOrWhiteSpace(manifest.Type) ? "未声明" : manifest.Type;
-                report($"{folderName}: 清单 type 必须是 {PluginContract.ShimModName}，实际 {actual}");
+                var actual = string.IsNullOrWhiteSpace(manifest.ParentName) ? "未声明" : manifest.ParentName;
+                report($"{folderName}: 清单 type 必须是 {PluginContractInfo.ParentName}，实际 {actual}");
                 return null;
             }
 
-            if (manifest.Api != PluginContract.ApiVersion)
+            if (manifest.ApiVersion != PluginContractInfo.CurrentApiVersion)
             {
-                report($"{folderName}: api 不匹配（清单 {manifest.Api ?? "未声明"}，框架 {PluginContract.ApiVersion}）");
+                report($"{folderName}: api_version 不匹配（清单 {manifest.ApiVersion ?? "未声明"}，框架 {PluginContractInfo.CurrentApiVersion}）");
                 return null;
             }
 
             // 清单 schema 版本（ADR-0012）：解析器只认这一个版本。
-            if (manifest.FormatVersion != PluginContract.FormatVersion)
+            if (manifest.ManifestVersion != PluginContractInfo.CurrentManifestVersion)
             {
-                report($"{folderName}: format_version 不匹配（清单 {manifest.FormatVersion ?? "未声明"}，框架 {PluginContract.FormatVersion}）");
+                report($"{folderName}: manifest_version 不匹配（清单 {manifest.ManifestVersion ?? "未声明"}，框架 {PluginContractInfo.CurrentManifestVersion}）");
                 return null;
             }
 
@@ -134,6 +141,27 @@ internal static class ManifestReader
             report($"{folderName}: 清单读不出来 —— {ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>ADR-0040 改过名的 extraInfo 键；旧键不再读取，只给一条明确的迁移提示。</summary>
+    internal static string? LegacyExtraInfoMessage(PluginManifest manifest)
+    {
+        (string Old, string New)[] renamed =
+        [
+            ("api", "api_version"),
+            ("provider", "loader"),
+            ("format_version", "manifest_version"),
+        ];
+
+        foreach (var (oldKey, newKey) in renamed)
+        {
+            if (manifest.ExtraInfo.ContainsKey(oldKey))
+            {
+                return $"清单使用了旧字段 extraInfo.{oldKey}，已改名为 extraInfo.{newKey}（ADR-0040）";
+            }
+        }
+
+        return null;
     }
 
     /// <summary>entry 必须是包内相对路径：绝对路径与 .. 都出界。</summary>

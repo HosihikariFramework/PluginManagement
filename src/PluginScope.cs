@@ -1,4 +1,4 @@
-namespace Hosihikari.PluginManagement;
+namespace Hosihikari.Internal;
 
 /// <summary>
 /// 交给单个插件的宿主服务作用域。插件忘了退订的订阅、忘了释放的定时器，由它在卸载时一并收回。
@@ -28,7 +28,7 @@ internal sealed class PluginScope(IEventBus events, IScheduler scheduler, Plugin
 
     public void Publish<TEvent>(TEvent @event) => events.Publish(@event);
 
-    public IDisposable RunLater(TimeSpan delay, Action work)
+    public IDisposable ScheduleOnce(TimeSpan delay, Action work)
     {
         // 单次任务完成后必须把自己从 _owned 摘掉；否则回调闭包会一直留到卸载。
         // 零延时可能在 Track 返回前就执行，所以完成与登记用同一把锁收口。
@@ -36,7 +36,7 @@ internal sealed class PluginScope(IEventBus events, IScheduler scheduler, Plugin
         var completed = false;
         Handle? handle = null;
 
-        var tracked = Track(() => scheduler.RunLater(delay, () =>
+        var tracked = Track(() => scheduler.ScheduleOnce(delay, () =>
         {
             try
             {
@@ -69,8 +69,8 @@ internal sealed class PluginScope(IEventBus events, IScheduler scheduler, Plugin
         return tracked;
     }
 
-    public IDisposable RunEvery(TimeSpan interval, Action work) =>
-        Track(() => scheduler.RunEvery(interval, () =>
+    public IDisposable SchedulePeriodic(TimeSpan interval, Action work) =>
+        Track(() => scheduler.SchedulePeriodic(interval, () =>
         {
             if (_enabled)
             {

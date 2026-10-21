@@ -6,36 +6,38 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Hosihikari;
-using Hosihikari.PluginManagement.Pack;
+using Hosihikari.Internal;
+using Hosihikari.Internal.Pack;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Hosihikari.PluginManagement.Spike;
+namespace Hosihikari.Spike;
 
 internal static class RegressionChecks
 {
     internal static IEnumerable<(string Name, bool Passed, string Detail)> Run(string root)
     {
-        foreach (var mode in new[] { "load", "enable", "null", "provider-throw", "cleanup-throw", "fault-on-load" })
+        foreach (var mode in new[] { "load", "enable", "null", "loader-throw", "cleanup-throw", "fault-on-load" })
         {
             var directory = Path.Combine(root, mode);
             var host = NewHost(directory);
-            var provider = new FailingProvider(mode);
-            host.AddProvider(provider);
+            var regressionLoader = new FailingLoader(mode);
+            host.RegisterLoader(regressionLoader);
             var package = Stage(directory, "Broken");
             var loaded = mode == "enable" ? LoadAll() : host.Load(package);
             host.Events.Publish("after failure");
-            var context = provider.Context!;
+            var context = regressionLoader.Context!;
             var scope = (PluginScope)context.Events;
             var expectedHooks = mode is "load" or "enable" or "cleanup-throw" or "fault-on-load";
-            var hooksCleaned = provider.Unloads == (expectedHooks ? 1 : 0)
-                               && provider.Disables == (mode == "enable" ? 1 : 0);
-            var clean = !loaded && host.LoadedNames.Count == 0 && provider.Events == 0
+            var hooksCleaned = regressionLoader.Unloads == (expectedHooks ? 1 : 0)
+                               && regressionLoader.Disables == (mode == "enable" ? 1 : 0);
+            var clean = !loaded && host.LoadedNames.Count == 0 && regressionLoader.Events == 0
                         && context.PluginServices.Get<Marker>() is null && hooksCleaned
-                        && provider.Releases == (expectedHooks ? 1 : 0)
+                        && regressionLoader.Releases == (expectedHooks ? 1 : 0)
                         && RejectsReleasedScope(scope);
             yield return ($"R1 加载回滚 ({mode})", clean,
-                $"events={provider.Events} unload={provider.Unloads} disable={provider.Disables} release={provider.Releases}");
+                $"events={regressionLoader.Events} unload={regressionLoader.Unloads} "
+                + $"disable={regressionLoader.Disables} release={regressionLoader.Releases}");
 
             bool LoadAll()
             {
@@ -46,7 +48,7 @@ internal static class RegressionChecks
 
         var dependencyRoot = Path.Combine(root, "dependencies");
         var dependencyHost = NewHost(dependencyRoot);
-        dependencyHost.AddProvider(new FailingProvider("load"));
+        dependencyHost.RegisterLoader(new FailingLoader("load"));
         Stage(dependencyRoot, "Broken");
         Stage(dependencyRoot, "Dependent", "Broken");
         Stage(dependencyRoot, "Transitive", "Dependent");
@@ -57,7 +59,7 @@ internal static class RegressionChecks
 
         var configRoot = Path.Combine(root, "configuration");
         var configHost = NewHost(configRoot);
-        configHost.AddProvider(new FailingProvider("none"));
+        configHost.RegisterLoader(new FailingLoader("none"));
         var badConfig = Stage(configRoot, "BadConfig");
         File.WriteAllText(Path.Combine(badConfig, "BadConfig.conf"), "foo = {");
         Stage(configRoot, "GoodConfig");
@@ -89,7 +91,7 @@ internal static class RegressionChecks
         {
             try
             {
-                var handle = concurrentScope.RunLater(TimeSpan.FromHours(1), () => { });
+                var handle = concurrentScope.ScheduleOnce(TimeSpan.FromHours(1), () => { });
                 if (i % 2 == 0) handle.Dispose();
                 if (i % 7 == 0) concurrentScope.Register(new Marker());
                 if (i == 100) concurrentScope.ReleaseAll();
@@ -108,7 +110,7 @@ internal static class RegressionChecks
 
         var manifestRoot = Path.Combine(root, "manifest");
         var manifestHost = NewHost(manifestRoot);
-        manifestHost.AddProvider(new FailingProvider("none"));
+        manifestHost.RegisterLoader(new FailingLoader("none"));
         Stage(manifestRoot, "Good");
         Stage(manifestRoot, "SelfDependency", "SelfDependency");
         Stage(manifestRoot, "NullDependencies");
@@ -116,7 +118,7 @@ internal static class RegressionChecks
             {
               "name": "NullDependencies", "entry": "main", "type": "hosihikari",
               "dependencies": null,
-              "extraInfo": { "api": "2", "format_version": "1", "provider": "regression" }
+              "extraInfo": { "api_version": "2", "manifest_version": "1", "loader": "regression" }
             }
             """);
         StageManifest(manifestRoot, "NullExtra", """
@@ -129,7 +131,7 @@ internal static class RegressionChecks
             {
               "name": "NullDependencyEntry", "entry": "main", "type": "hosihikari",
               "dependencies": [null],
-              "extraInfo": { "api": "2", "format_version": "1", "provider": "regression" }
+              "extraInfo": { "api_version": "2", "manifest_version": "1", "loader": "regression" }
             }
             """);
         var manifestThrew = false;
@@ -144,19 +146,40 @@ internal static class RegressionChecks
             && !manifestLoaded.Contains("NullDependencyEntry"),
             string.Join(",", manifestLoaded));
 
+        var legacyRoot = Path.Combine(root, "legacy-keys");
+        var legacyPackage = StageManifest(legacyRoot, "Legacy", """
+            {
+              "name": "Legacy", "entry": "main", "type": "hosihikari",
+              "extraInfo": { "api": "2", "manifest_version": "1" }
+            }
+            """);
+        var legacyReports = new List<string>();
+        var legacyRead = ManifestReader.Read(legacyPackage, legacyReports.Add);
+        var legacySource = Path.Combine(legacyRoot, "source");
+        Directory.CreateDirectory(legacySource);
+        var legacyManifestPath = Path.Combine(legacyRoot, "Legacy.json");
+        File.WriteAllText(legacyManifestPath, File.ReadAllText(Path.Combine(legacyPackage, "manifest.json")));
+        var legacyPack = Packager.Pack(legacySource, legacyManifestPath, Path.Combine(legacyRoot, "out"), []);
+        yield return ("R20 旧清单键给出迁移错误",
+            legacyRead is null
+            && legacyReports.Any(message => message.Contains("已改名为 extraInfo.api_version", StringComparison.Ordinal))
+            && !legacyPack.Succeeded
+            && legacyPack.Problems.Any(problem => problem.Contains("已改名为 extraInfo.api_version", StringComparison.Ordinal)),
+            legacyReports.FirstOrDefault() ?? string.Join(" | ", legacyPack.Problems));
+
         var lockRoot = Path.Combine(root, "load-lock");
         var parentLock = new object();
         var secondStarted = new ManualResetEventSlim();
         var secondRelease = new ManualResetEventSlim();
-        var lockProvider = new FailingProvider("none")
+        var lockLoader = new FailingLoader("none")
         {
             SecondLoadStarted = secondStarted,
             SecondRelease = secondRelease,
         };
-        var lockHost = new PluginManagerHost(
+        var lockHost = new PluginManager(
             Path.Combine(lockRoot, "plugins"), Path.Combine(lockRoot, "data"), Path.Combine(lockRoot, "config"),
             _ => { lock (parentLock) { } });
-        lockHost.AddProvider(lockProvider);
+        lockHost.RegisterLoader(lockLoader);
         Stage(lockRoot, "Probe");
         Stage(lockRoot, "Second", "Probe");
         var loadDone = new ManualResetEventSlim();
@@ -184,38 +207,38 @@ internal static class RegressionChecks
         yield return ("R9 加载路径不在锁内回调父级", bothDone && secondStarted.IsSet && loadError is null,
             $"loaded={string.Join(",", lockHost.LoadedNames)} error={loadError?.Message}");
 
-        var rollbackRoot = Path.Combine(root, "provider-rollback");
+        var rollbackRoot = Path.Combine(root, "loader-rollback");
         var rollbackHost = NewHost(rollbackRoot);
-        rollbackHost.AddProvider(new FailingProvider("provider-register-throw"));
+        rollbackHost.RegisterLoader(new FailingLoader("loader-register-throw"));
         var brokenPackage = Stage(rollbackRoot, "Broken");
         var ghostPackage = StageManifest(rollbackRoot, "GhostUser", """
             {
               "name": "GhostUser", "entry": "main", "type": "hosihikari",
               "dependencies": [],
-              "extraInfo": { "api": "2", "format_version": "1", "provider": "ghost" }
+              "extraInfo": { "api_version": "2", "manifest_version": "1", "loader": "ghost" }
             }
             """);
         var brokenLoaded = rollbackHost.Load(brokenPackage);
         var ghostLoaded = rollbackHost.Load(ghostPackage);
-        yield return ("R10 失败装载撤销 Provider 登记",
+        yield return ("R10 失败装载撤销 Loader 登记",
             !brokenLoaded && !ghostLoaded && rollbackHost.LoadedNames.Count == 0,
             $"broken={brokenLoaded} ghost={ghostLoaded} loaded={string.Join(",", rollbackHost.LoadedNames)}");
 
-        var providerRoot = Path.Combine(root, "provider-unload");
-        var providerHost = NewHost(providerRoot);
-        providerHost.AddProvider(new FailingProvider("none") { RegisterProvider = true });
-        var providerPackage = Stage(providerRoot, "ProviderPackage");
-        var providerLoaded = providerHost.Load(providerPackage);
-        var providerUnload = providerHost.Unload("ProviderPackage");
-        yield return ("R11 显式卸载 Provider 包被拒绝",
-            providerLoaded && !providerUnload.Released && providerHost.LoadedNames.Contains("ProviderPackage"),
-            providerUnload.Error ?? "卸载竟然成功");
+        var loaderRoot = Path.Combine(root, "loader-unload");
+        var loaderHost = NewHost(loaderRoot);
+        loaderHost.RegisterLoader(new FailingLoader("none") { RegisterLoader = true });
+        var loaderPackage = Stage(loaderRoot, "LoaderPackage");
+        var loaderLoaded = loaderHost.Load(loaderPackage);
+        var loaderUnload = loaderHost.Unload("LoaderPackage");
+        yield return ("R11 显式卸载 Loader 包被拒绝",
+            loaderLoaded && !loaderUnload.Released && loaderHost.LoadedNames.Contains("LoaderPackage"),
+            loaderUnload.Error ?? "卸载竟然成功");
 
         if (!OperatingSystem.IsWindows())
         {
             var aclRoot = Path.Combine(root, "manifest-acl");
             var aclHost = NewHost(aclRoot);
-            aclHost.AddProvider(new FailingProvider("none"));
+            aclHost.RegisterLoader(new FailingLoader("none"));
             Stage(aclRoot, "Good");
             var lockedPackage = Stage(aclRoot, "Locked");
             File.SetUnixFileMode(Path.Combine(lockedPackage, "manifest.json"), UnixFileMode.None);
@@ -227,7 +250,7 @@ internal static class RegressionChecks
                 string.Join(",", aclHost.LoadedNames));
         }
 
-        var reuseRoot = Path.Combine(root, "provider-reuse-log");
+        var reuseRoot = Path.Combine(root, "loader-reuse-log");
         var reuseLock = new object();
         var reuseParentHeld = new ManualResetEventSlim();
         var reuseLogEntered = new ManualResetEventSlim();
@@ -236,12 +259,12 @@ internal static class RegressionChecks
             reuseLogEntered.Set();
             lock (reuseLock) { }
         });
-        var reuseHost = new PluginManagerHost(
+        var reuseHost = new PluginManager(
             Path.Combine(reuseRoot, "plugins"), Path.Combine(reuseRoot, "data"), Path.Combine(reuseRoot, "config"),
             message => Console.WriteLine($"[回归] {message}"),
             new SingleService(reuseLogger));
-        reuseHost.AddProvider(new FailingProvider("none") { RegisterProvider = true });
-        var reusePackage = Stage(reuseRoot, "ProviderPackage");
+        reuseHost.RegisterLoader(new FailingLoader("none") { RegisterLoader = true });
+        var reusePackage = Stage(reuseRoot, "LoaderPackage");
         var firstLoad = reuseHost.Load(reusePackage);
         UnloadResult? reuseUnload = null;
         var unloadThread = Task.Run(() =>
@@ -250,19 +273,19 @@ internal static class RegressionChecks
             {
                 reuseParentHeld.Set();
                 reuseLogEntered.Wait(TimeSpan.FromSeconds(2));
-                reuseUnload = reuseHost.Unload("ProviderPackage");
+                reuseUnload = reuseHost.Unload("LoaderPackage");
             }
         });
         reuseParentHeld.Wait(TimeSpan.FromSeconds(2));
         var reuseLoad = Task.Run(() => reuseHost.Load(reusePackage));
         var completed = reuseLoad.Wait(TimeSpan.FromSeconds(5)) && unloadThread.Wait(TimeSpan.FromSeconds(5));
-        yield return ("R13 Provider 复用日志不在核心锁内",
+        yield return ("R13 Loader 复用日志不在核心锁内",
             firstLoad && completed && reuseLoad.Result && reuseUnload is { Released: false },
             completed ? $"reload={reuseLoad.Result} unload={reuseUnload?.Error}" : "超时：日志回调与卸载互相等");
 
         var versionRoot = Path.Combine(root, "dependency-versions");
         var versionHost = NewHost(versionRoot);
-        versionHost.AddProvider(new FailingProvider("none"));
+        versionHost.RegisterLoader(new FailingLoader("none"));
         StageVersioned(versionRoot, "Lib", "2.0.0");
         StageVersioned(versionRoot, "Lib1", "1.5.0");
         StageVersioned(versionRoot, "Lib12", "1.2.7");
@@ -286,7 +309,7 @@ internal static class RegressionChecks
 
         var parentVersionRoot = Path.Combine(root, "dependency-versions-parent");
         var parentVersionHost = NewHost(parentVersionRoot);
-        parentVersionHost.AddProvider(new FailingProvider("none"));
+        parentVersionHost.RegisterLoader(new FailingLoader("none"));
         var versionLib = StageVersioned(parentVersionRoot, "Lib", "2.0.0");
         var needs2 = StageVersioned(parentVersionRoot, "Needs2", "1.0.0", ("Lib", "[2.0.0]"));
         var needs3 = StageVersioned(parentVersionRoot, "Needs3", "1.0.0", ("Lib", "[3.0.0]"));
@@ -312,14 +335,14 @@ internal static class RegressionChecks
         {
             name = "BadVersion", entry = "main.dll", type = "hosihikari", version = "not-semver",
             dependencies = Array.Empty<object>(),
-            extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "assembly" },
+            extraInfo = new { api_version = PluginContractInfo.CurrentApiVersion, manifest_version = "1", loader = "assembly" },
         }));
         var badConstraintManifest = Path.Combine(packVersionRoot, "bad-constraint.json");
         File.WriteAllText(badConstraintManifest, JsonSerializer.Serialize(new
         {
             name = "BadConstraint", entry = "main.dll", type = "hosihikari", version = "1.0.0",
             dependencies = new[] { new { name = "Lib", version = ">>1" } },
-            extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "assembly" },
+            extraInfo = new { api_version = PluginContractInfo.CurrentApiVersion, manifest_version = "1", loader = "assembly" },
         }));
         var badVersionPack = Packager.Pack(
             packVersionSource, badVersionManifest, Path.Combine(packVersionRoot, "out-version"), []);
@@ -339,7 +362,7 @@ internal static class RegressionChecks
               "type": "hosihikari",
               "version": "1.0.0",
               "dependencies": [ null ],
-              "extraInfo": { "api": 2, "format_version": "1", "provider": "assembly" }
+              "extraInfo": { "api_version": 2, "manifest_version": "1", "loader": "assembly" }
             }
             """);
         PackResult? nullDependencyPack = null;
@@ -360,7 +383,7 @@ internal static class RegressionChecks
             && nullProblems.Any(problem => problem.Contains("dependencies", StringComparison.Ordinal)),
             nullDependencyError ?? string.Join(" | ", nullDependencyPack?.Problems ?? []));
 
-        var timerProbe = RunLaterRetentionProbe();
+        var timerProbe = ScheduleOnceRetentionProbe();
         yield return ("R19 单次定时任务完成后释放捕获对象", timerProbe.Passed, timerProbe.Detail);
 
         var fuzzRoot = Path.Combine(root, "manifest-fuzz");
@@ -387,14 +410,14 @@ internal static class RegressionChecks
         yield return ("R17 畸形清单不抛出", fuzzClean, fuzzError ?? "200 份输入");
     }
 
-    private static (bool Passed, string Detail) RunLaterRetentionProbe()
+    private static (bool Passed, string Detail) ScheduleOnceRetentionProbe()
     {
         var logger = NullLogger.Instance;
         var scope = new PluginScope(new EventBus(logger), new Scheduler(logger), new PluginServiceRegistry());
         scope.Open();
 
         using var done = new ManualResetEventSlim();
-        scope.RunLater(TimeSpan.Zero, done.Set);
+        scope.ScheduleOnce(TimeSpan.Zero, done.Set);
         if (!done.Wait(TimeSpan.FromSeconds(5)))
         {
             scope.ReleaseAll();
@@ -423,7 +446,7 @@ internal static class RegressionChecks
         return (ownedCount == 0, $"owned={ownedCount}");
     }
 
-    private static PluginManagerHost NewHost(string root) => new(
+    private static PluginManager NewHost(string root) => new(
         Path.Combine(root, "plugins"), Path.Combine(root, "data"), Path.Combine(root, "config"),
         message => Console.WriteLine($"[回归] {message}"));
 
@@ -435,7 +458,7 @@ internal static class RegressionChecks
         {
             name, entry = "main", type = "hosihikari",
             dependencies = dependency is null ? Array.Empty<object>() : [new { name = dependency }],
-            extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "regression" },
+            extraInfo = new { api_version = PluginContractInfo.CurrentApiVersion, manifest_version = "1", loader = "regression" },
         }));
         return directory;
     }
@@ -454,7 +477,7 @@ internal static class RegressionChecks
         [
             "{", "}", "[", "]", "\"name\"", ":", "\"p\"", "\"entry\"", "\"..\"", "\"main.dll\"",
             "\"type\"", "\"hosihikari\"", "\"version\"", "\"1.0.0\"", "\"dependencies\"",
-            "null", "0", ",", "\\", "\n", "\"extraInfo\"", "\"api\"", "\"2\"",
+            "null", "0", ",", "\\", "\n", "\"extraInfo\"", "\"api_version\"", "\"2\"",
         ];
         var builder = new StringBuilder();
         for (var i = 0; i < random.Next(1, 50); i++)
@@ -481,13 +504,13 @@ internal static class RegressionChecks
                 name = dependency.Name,
                 version = dependency.Version,
             }).ToArray(),
-            extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "regression" },
+            extraInfo = new { api_version = PluginContractInfo.CurrentApiVersion, manifest_version = "1", loader = "regression" },
         }));
 
     private static bool RejectsReleasedScope(PluginScope scope)
     {
         Action[] actions = [() => scope.Subscribe<string>(_ => { }),
-            () => scope.RunLater(TimeSpan.FromHours(1), () => { }),
+            () => scope.ScheduleOnce(TimeSpan.FromHours(1), () => { }),
             () => scope.Register(new Marker())];
         return actions.All(action =>
         {
@@ -515,7 +538,7 @@ internal static class RegressionChecks
     {
         for (var i = 0; i < 1000; i++)
         {
-            var handle = scope.RunLater(TimeSpan.FromHours(1), () => { });
+            var handle = scope.ScheduleOnce(TimeSpan.FromHours(1), () => { });
             handle.Dispose();
             handle.Dispose();
         }
@@ -571,7 +594,7 @@ internal static class RegressionChecks
         File.WriteAllText(manifest, JsonSerializer.Serialize(new
         {
             name = "OutputFixture", type = "hosihikari", entry = "src/main.cs",
-            extraInfo = new { api = PluginContract.ApiVersion, format_version = "1", provider = "csharp" },
+            extraInfo = new { api_version = PluginContractInfo.CurrentApiVersion, manifest_version = "1", loader = "csharp" },
         }));
         var result = Packager.Pack(source, manifest, Path.Combine(root, "packages"), []);
         return result.Succeeded
@@ -612,17 +635,12 @@ internal static class RegressionChecks
         }
     }
 
-    private sealed class GhostProvider : IPluginProvider
+    private sealed class GhostLoader : IPluginLoader
     {
-        public string Type => "ghost";
-        public bool CanLoad(PluginManifest manifest) => manifest.Provider == Type;
-        public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context) =>
-            new GhostInstance();
-
-        private sealed class GhostInstance() : PluginInstance(new GhostPlugin())
-        {
-            public override Func<bool> Release() => static () => true;
-        }
+        public string Id => "ghost";
+        public bool CanLoad(PluginManifest manifest) => manifest.Loader == Id;
+        public PluginHandle? Load(PluginManifest manifest, string packageDirectory, IPluginContext context) =>
+            new TestPluginHandle(new GhostPlugin());
 
         private sealed class GhostPlugin : IPlugin
         {
@@ -633,17 +651,17 @@ internal static class RegressionChecks
         }
     }
 
-    private sealed class FailingProvider(string mode) : IPluginProvider
+    private sealed class FailingLoader(string mode) : IPluginLoader
     {
         private readonly string _mode = mode;
-        public string Type => "regression";
+        public string Id => "regression";
         public IPluginContext? Context;
         public ManualResetEventSlim? SecondLoadStarted;
         public ManualResetEventSlim? SecondRelease;
-        public bool RegisterProvider { get; set; }
+        public bool RegisterLoader { get; set; }
         public int Events, Unloads, Disables, Releases;
-        public bool CanLoad(PluginManifest manifest) => manifest.Provider == Type;
-        public PluginInstance? Load(PluginManifest manifest, string packageDirectory, IPluginContext context)
+        public bool CanLoad(PluginManifest manifest) => manifest.Loader == Id;
+        public PluginHandle? Load(PluginManifest manifest, string packageDirectory, IPluginContext context)
         {
             Context = context;
             if (manifest.Name == "Second")
@@ -652,10 +670,10 @@ internal static class RegressionChecks
                 SecondRelease?.Wait(TimeSpan.FromSeconds(5));
                 return null;
             }
-            if (manifest.Name == "Broken" && _mode is "null" or "provider-throw")
+            if (manifest.Name == "Broken" && _mode is "null" or "loader-throw")
             {
                 UseContext(context);
-                if (_mode == "provider-throw") throw new InvalidOperationException("provider failure");
+                if (_mode == "loader-throw") throw new InvalidOperationException("loader failure");
                 return null;
             }
             return new Instance(new Plugin(this, manifest.Name), this);
@@ -664,29 +682,43 @@ internal static class RegressionChecks
         {
             context.Events.Subscribe<string>(_ => Interlocked.Increment(ref Events));
             context.PluginServices.Register(new Marker());
-            context.Scheduler.RunLater(TimeSpan.FromHours(1), () => Interlocked.Increment(ref Events));
+            context.Scheduler.ScheduleOnce(TimeSpan.FromHours(1), () => Interlocked.Increment(ref Events));
         }
-        private sealed class Instance(IPlugin plugin, FailingProvider owner) : PluginInstance(plugin)
+        private sealed class Instance(IPlugin plugin, FailingLoader owner) : PluginHandle(plugin)
         {
-            public override Func<bool> Release() { owner.Releases++; return () => true; }
+            public override bool IsUnloaded => Plugin is null;
+
+            public override void Unload()
+            {
+                if (Plugin is null)
+                {
+                    return;
+                }
+
+                owner.Releases++;
+                Plugin = null;
+            }
+
+            public override Task<bool> WaitForUnloadAsync(CancellationToken cancellationToken = default) =>
+                Task.FromResult(IsUnloaded);
         }
-        private sealed class Plugin(FailingProvider owner, string name) : IPlugin
+        private sealed class Plugin(FailingLoader owner, string name) : IPlugin
         {
             public void OnLoad(IPluginContext context)
             {
                 owner.UseContext(context);
-                if (owner.RegisterProvider)
+                if (owner.RegisterLoader)
                 {
-                    context.TryRegisterProvider(new GhostProvider());
+                    context.RegisterLoader(new GhostLoader());
                 }
                 if (name == "Broken" && owner._mode is "load" or "cleanup-throw")
                     throw new InvalidOperationException("load failure");
                 if (name == "Broken" && owner._mode == "fault-on-load")
                     context.ReportFault("immediate death");
-                if (name == "Broken" && owner._mode == "provider-register-throw")
+                if (name == "Broken" && owner._mode == "loader-register-throw")
                 {
-                    context.RegisterProvider(new GhostProvider());
-                    throw new InvalidOperationException("provider registration then failure");
+                    context.RegisterLoader(new GhostLoader());
+                    throw new InvalidOperationException("loader registration then failure");
                 }
             }
             public PluginHookResult OnEnable() => name == "Broken" && owner._mode == "enable"
@@ -704,14 +736,14 @@ internal static class RegressionChecks
     {
         internal readonly ConcurrentBag<WeakReference> References = [];
         internal int Created, Disposed, DuplicateDisposes;
-        public IDisposable RunLater(TimeSpan delay, Action work)
+        public IDisposable ScheduleOnce(TimeSpan delay, Action work)
         {
             Interlocked.Increment(ref Created);
             var disposable = new Counted(this);
             References.Add(new WeakReference(disposable));
             return disposable;
         }
-        public IDisposable RunEvery(TimeSpan interval, Action work) => RunLater(interval, work);
+        public IDisposable SchedulePeriodic(TimeSpan interval, Action work) => ScheduleOnce(interval, work);
         private sealed class Counted(CountingScheduler owner) : IDisposable
         {
             private int _disposed;

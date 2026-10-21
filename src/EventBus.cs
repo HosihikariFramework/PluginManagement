@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
 
-namespace Hosihikari.PluginManagement;
+namespace Hosihikari.Internal;
 
 internal sealed class EventBus(ILogger logger) : IEventBus
 {
@@ -67,7 +67,7 @@ internal sealed class EventBus(ILogger logger) : IEventBus
 
 internal sealed class Scheduler(ILogger logger) : IScheduler
 {
-    public IDisposable RunLater(TimeSpan delay, Action work)
+    public IDisposable ScheduleOnce(TimeSpan delay, Action work)
     {
         // 先建成不触发的，赋值之后再 Change —— 否则回调可能早于赋值而拿不到自己。
         Timer? timer = null;
@@ -80,7 +80,7 @@ internal sealed class Scheduler(ILogger logger) : IScheduler
         return new Handle(timer);
     }
 
-    public IDisposable RunEvery(TimeSpan interval, Action work) =>
+    public IDisposable SchedulePeriodic(TimeSpan interval, Action work) =>
         new Handle(new Timer(_ => Fire(work), null, interval, interval));
 
     private void Fire(Action work)

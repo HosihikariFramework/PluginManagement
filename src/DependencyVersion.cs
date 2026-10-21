@@ -1,7 +1,7 @@
 using Hosihikari;
 using NuGet.Versioning;
 
-namespace Hosihikari.PluginManagement;
+namespace Hosihikari.Internal;
 
 /// <summary>清单版本与依赖约束的解析（ADR-0039）。</summary>
 internal static class DependencyVersion
@@ -26,10 +26,10 @@ internal static class DependencyVersion
                 return false;
             }
 
-            if (!string.IsNullOrWhiteSpace(dependency.Version)
-                && !VersionRange.TryParse(dependency.Version, out _))
+            if (!string.IsNullOrWhiteSpace(dependency.VersionRange)
+                && !VersionRange.TryParse(dependency.VersionRange, out _))
             {
-                problem = $"{manifest.Name}: 依赖 {dependency.Name} 的版本约束不是合法 SemVer 范围：{dependency.Version}";
+                problem = $"{manifest.Name}: 依赖 {dependency.Name} 的版本约束不是合法 SemVer 范围：{dependency.VersionRange}";
                 return false;
             }
         }
@@ -42,21 +42,21 @@ internal static class DependencyVersion
     {
         problem = null;
 
-        if (string.IsNullOrWhiteSpace(dependency.Version) || dependency.Version.Trim() == "*")
+        if (string.IsNullOrWhiteSpace(dependency.VersionRange) || dependency.VersionRange.Trim() == "*")
         {
             return true;
         }
 
-        if (!VersionRange.TryParse(dependency.Version, out var range))
+        if (!VersionRange.TryParse(dependency.VersionRange, out var range))
         {
-            problem = $"依赖 {dependency.Name} 的版本约束无效：{dependency.Version}";
+            problem = $"依赖 {dependency.Name} 的版本约束无效：{dependency.VersionRange}";
             return false;
         }
 
         if (string.IsNullOrWhiteSpace(target.Version)
             || !NuGetVersion.TryParse(target.Version, out var version))
         {
-            problem = $"依赖 {dependency.Name} 没有可比较的 version，无法满足 {dependency.Version}";
+            problem = $"依赖 {dependency.Name} 没有可比较的 version，无法满足 {dependency.VersionRange}";
             return false;
         }
 
@@ -65,7 +65,7 @@ internal static class DependencyVersion
         if (!range.Satisfies(version)
             || (range.Float is { } floatRange && !floatRange.Satisfies(version)))
         {
-            problem = $"依赖 {dependency.Name} 的版本 {version} 不满足 {dependency.Version}";
+            problem = $"依赖 {dependency.Name} 的版本 {version} 不满足 {dependency.VersionRange}";
             return false;
         }
 
