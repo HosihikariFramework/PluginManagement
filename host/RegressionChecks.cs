@@ -360,6 +360,9 @@ internal static class RegressionChecks
             && nullProblems.Any(problem => problem.Contains("dependencies", StringComparison.Ordinal)),
             nullDependencyError ?? string.Join(" | ", nullDependencyPack?.Problems ?? []));
 
+        var timerProbe = RunLaterRetentionProbe();
+        yield return ("R19 单次定时任务完成后释放捕获对象", timerProbe.Passed, timerProbe.Detail);
+
         var fuzzRoot = Path.Combine(root, "manifest-fuzz");
         Directory.CreateDirectory(fuzzRoot);
         var fuzzRandom = new Random(20261021);
@@ -382,6 +385,42 @@ internal static class RegressionChecks
             }
         }
         yield return ("R17 畸形清单不抛出", fuzzClean, fuzzError ?? "200 份输入");
+    }
+
+    private static (bool Passed, string Detail) RunLaterRetentionProbe()
+    {
+        var logger = NullLogger.Instance;
+        var scope = new PluginScope(new EventBus(logger), new Scheduler(logger), new PluginServiceRegistry());
+        scope.Open();
+
+        using var done = new ManualResetEventSlim();
+        scope.RunLater(TimeSpan.Zero, done.Set);
+        if (!done.Wait(TimeSpan.FromSeconds(5)))
+        {
+            scope.ReleaseAll();
+            return (false, "任务没有在限期内执行");
+        }
+
+        var ownedField = typeof(PluginScope).GetField(
+            "_owned", BindingFlags.NonPublic | BindingFlags.Instance);
+        var deadline = Stopwatch.StartNew();
+        var ownedCount = -1;
+        while (deadline.Elapsed < TimeSpan.FromSeconds(2))
+        {
+            var owned = ownedField?.GetValue(scope);
+            ownedCount = owned is null
+                ? -1
+                : (int)(owned.GetType().GetProperty("Count")?.GetValue(owned) ?? -1);
+            if (ownedCount == 0)
+            {
+                break;
+            }
+
+            Thread.Sleep(10);
+        }
+
+        scope.ReleaseAll();
+        return (ownedCount == 0, $"owned={ownedCount}");
     }
 
     private static PluginManagerHost NewHost(string root) => new(

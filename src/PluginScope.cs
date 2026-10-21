@@ -28,14 +28,46 @@ internal sealed class PluginScope(IEventBus events, IScheduler scheduler, Plugin
 
     public void Publish<TEvent>(TEvent @event) => events.Publish(@event);
 
-    public IDisposable RunLater(TimeSpan delay, Action work) =>
-        Track(() => scheduler.RunLater(delay, () =>
+    public IDisposable RunLater(TimeSpan delay, Action work)
+    {
+        // 单次任务完成后必须把自己从 _owned 摘掉；否则回调闭包会一直留到卸载。
+        // 零延时可能在 Track 返回前就执行，所以完成与登记用同一把锁收口。
+        var gate = new object();
+        var completed = false;
+        Handle? handle = null;
+
+        var tracked = Track(() => scheduler.RunLater(delay, () =>
         {
-            if (_enabled)
+            try
             {
-                work();
+                if (_enabled)
+                {
+                    work();
+                }
+            }
+            finally
+            {
+                lock (gate)
+                {
+                    completed = true;
+                    handle?.Dispose();
+                    handle = null;
+                }
             }
         }));
+
+        lock (gate)
+        {
+            handle = tracked;
+            if (completed)
+            {
+                tracked.Dispose();
+                handle = null;
+            }
+        }
+
+        return tracked;
+    }
 
     public IDisposable RunEvery(TimeSpan interval, Action work) =>
         Track(() => scheduler.RunEvery(interval, () =>
@@ -113,7 +145,7 @@ internal sealed class PluginScope(IEventBus events, IScheduler scheduler, Plugin
         }
     }
 
-    private IDisposable Track(Func<IDisposable> create)
+    private Handle Track(Func<IDisposable> create)
     {
         lock (_gate)
         {
