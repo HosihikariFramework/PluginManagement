@@ -3,16 +3,6 @@ using Microsoft.Extensions.Logging;
 
 namespace Hosihikari.Internal;
 
-/// <summary>插件在框架里的状态。</summary>
-internal enum PluginState
-{
-    /// <summary>在场：实例已建、钩子已挂，事件订阅与定时器归它的作用域管。</summary>
-    Loaded,
-
-    /// <summary>已放下：实例与作用域都放开了，只等 ALC 被真正回收。回收没通过前它仍占着内存（ADR-0004）。</summary>
-    Detached,
-}
-
 internal sealed class PluginContext(
     string name,
     string packageDirectory,
