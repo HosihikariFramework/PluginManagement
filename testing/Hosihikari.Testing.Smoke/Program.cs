@@ -61,6 +61,52 @@ using (var host = new PluginTestHost(refused))
         result.Reason ?? "（没有原因）"));
 }
 
+var gate = new GatePlugin();
+using (var host = new PluginTestHost(gate))
+{
+    host.Load();
+    host.Context.Events.Publish("before-enable");
+    host.Enable();
+    host.Context.Events.Publish("enabled");
+    host.Context.TestScheduler.RunOnce();
+    host.Disable();
+    host.Context.Events.Publish("disabled");
+    host.Unload();
+    host.Context.Events.Publish("unloaded");
+
+    checks.Add((
+        "启用闸门拦住启用前、停用后与卸载后的回调",
+        gate.Seen == 1 && gate.Scheduled == 1,
+        $"seen={gate.Seen} scheduled={gate.Scheduled}"));
+    checks.Add((
+        "卸载释放插件登记的服务",
+        host.Context.TestServices.Get<IProbeService>() is null,
+        host.Context.TestServices.Get<IProbeService>()?.Name ?? "（已释放）"));
+}
+
+using (var harness = new PluginManagerHarness())
+{
+    harness.Manager.RegisterLoader(new ProbeLoader());
+    harness.CreatePackage(
+        "HarnessProbe",
+        """
+        {
+          "name": "HarnessProbe",
+          "entry": "HarnessProbe.dll",
+          "type": "hosihikari",
+          "version": "1.0.0",
+          "extraInfo": { "api_version": "2", "manifest_version": "1", "loader": "probe" }
+        }
+        """);
+    var loaded = harness.Load("HarnessProbe");
+    var enabled = harness.Manager.Enable("HarnessProbe");
+    var unloaded = harness.Manager.Unload("HarnessProbe");
+    checks.Add((
+        "真实管理者辅助加载、启用并卸载",
+        loaded && enabled && unloaded.Released,
+        $"loaded={loaded} enabled={enabled} unloaded={unloaded.Released} {unloaded.Error}"));
+}
+
 Console.WriteLine("=== Hosihikari.Testing 冒烟 ===");
 foreach (var (name, passed, detail) in checks)
 {
@@ -95,4 +141,46 @@ sealed class RefusePlugin : IPlugin
     public PluginHookResult OnEnable() => PluginHookResult.Refuse("not now");
     public PluginHookResult OnDisable() => PluginHookResult.Allow();
     public void OnUnload() { }
+}
+
+sealed class GatePlugin : IPlugin
+{
+    public int Seen { get; private set; }
+    public int Scheduled { get; private set; }
+
+    public void OnLoad(IPluginContext context)
+    {
+        context.Events.Subscribe<string>(_ => Seen++);
+        context.Scheduler.ScheduleOnce(TimeSpan.Zero, () => Scheduled++);
+        context.PluginServices.Register<IProbeService>(new ProbeService("from-plugin"));
+    }
+
+    public PluginHookResult OnEnable() => PluginHookResult.Allow();
+    public PluginHookResult OnDisable() => PluginHookResult.Allow();
+    public void OnUnload() { }
+}
+
+sealed class ProbeLoader : IPluginLoader
+{
+    public string Id => "probe";
+    public bool CanLoad(PluginManifest manifest) => manifest.Loader == Id;
+
+    public PluginHandle? Load(PluginManifest manifest, string packageDirectory, IPluginContext context) =>
+        new ProbeHandle(new ProbePlugin());
+}
+
+sealed class ProbeHandle(ProbePlugin plugin) : PluginHandle(plugin)
+{
+    private bool _unloaded;
+
+    public override bool IsUnloaded => _unloaded;
+
+    public override void Unload()
+    {
+        _unloaded = true;
+        Plugin = null;
+    }
+
+    public override Task<bool> WaitForUnloadAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(true);
 }

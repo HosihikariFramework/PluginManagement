@@ -15,4 +15,6 @@ public sealed class TestServiceRegistry : IPluginServiceRegistry
 
     public T? Get<T>() where T : class =>
         _services.TryGetValue(typeof(T), out var service) ? (T)service : null;
+
+    internal bool Remove(Type type) => _services.Remove(type);
 }

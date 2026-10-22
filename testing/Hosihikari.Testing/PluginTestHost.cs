@@ -34,13 +34,24 @@ public sealed class PluginTestHost : IDisposable
     public PluginHookResult Enable()
     {
         var result = Plugin.OnEnable();
+        if (result.Allowed)
+        {
+            Context.Scope.Open();
+        }
+
         _hooks.Add(result.Allowed ? "enable" : $"enable:refused({result.Reason ?? "未给原因"})");
         return result;
     }
 
     public PluginHookResult Disable()
     {
+        var wasEnabled = Context.Scope.Close();
         var result = Plugin.OnDisable();
+        if (!result.Allowed && wasEnabled)
+        {
+            Context.Scope.Open();
+        }
+
         _hooks.Add(result.Allowed ? "disable" : $"disable:refused({result.Reason ?? "未给原因"})");
         return result;
     }
@@ -48,6 +59,7 @@ public sealed class PluginTestHost : IDisposable
     public void Unload()
     {
         Plugin.OnUnload();
+        Context.Scope.ReleaseAll();
         _hooks.Add("unload");
     }
 
@@ -72,6 +84,7 @@ public sealed class PluginTestHost : IDisposable
 
     public void Dispose()
     {
+        Context.Scope.ReleaseAll();
         try
         {
             if (Directory.Exists(_root))

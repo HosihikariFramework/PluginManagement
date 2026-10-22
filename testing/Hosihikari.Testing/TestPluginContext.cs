@@ -26,6 +26,7 @@ public sealed class TestPluginContext : IPluginContext
         TestEvents = new TestEventBus();
         TestScheduler = new TestScheduler();
         TestServices = new TestServiceRegistry();
+        Scope = new TestPluginScope(TestEvents, TestScheduler, TestServices);
     }
 
     public string Name { get; }
@@ -36,13 +37,15 @@ public sealed class TestPluginContext : IPluginContext
     public IConfiguration Configuration { get; set; }
 
     public TestEventBus TestEvents { get; }
-    public IEventBus Events => TestEvents;
+    public IEventBus Events => Scope;
 
     public TestScheduler TestScheduler { get; }
-    public IScheduler Scheduler => TestScheduler;
+    public IScheduler Scheduler => Scope;
 
     public TestServiceRegistry TestServices { get; }
-    public IPluginServiceRegistry PluginServices => TestServices;
+    public IPluginServiceRegistry PluginServices => Scope;
+
+    internal TestPluginScope Scope { get; }
 
     public IServiceProvider CarrierServices { get; set; } = EmptyServices.Instance;
 

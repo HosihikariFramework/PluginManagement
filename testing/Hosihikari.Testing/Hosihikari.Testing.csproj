@@ -22,12 +22,20 @@
     <None Include="README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 
-  <ItemGroup Condition="Exists('../../Plugin.Abstractions/src/Hosihikari.Plugin.Abstractions.csproj')">
-    <ProjectReference Include="../../Plugin.Abstractions/src/Hosihikari.Plugin.Abstractions.csproj" />
+  <ItemGroup Condition="Exists('../../../Plugin.Abstractions/src/Hosihikari.Plugin.Abstractions.csproj')">
+    <ProjectReference Include="../../../Plugin.Abstractions/src/Hosihikari.Plugin.Abstractions.csproj" />
   </ItemGroup>
 
-  <ItemGroup Condition="!Exists('../../Plugin.Abstractions/src/Hosihikari.Plugin.Abstractions.csproj')">
-    <PackageReference Include="Hosihikari.Plugin.Abstractions" Version="[1.0.0]" />
+  <ItemGroup Condition="!Exists('../../../Plugin.Abstractions/src/Hosihikari.Plugin.Abstractions.csproj')">
+    <PackageReference Include="Hosihikari.Plugin.Abstractions" Version="[1.1.0]" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('../../src/Hosihikari.PluginManager.csproj')">
+    <ProjectReference Include="../../src/Hosihikari.PluginManager.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="!Exists('../../src/Hosihikari.PluginManager.csproj')">
+    <PackageReference Include="Hosihikari.PluginManager" Version="[1.1.0]" />
   </ItemGroup>
 
 </Project>

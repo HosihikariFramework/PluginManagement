@@ -20,8 +20,16 @@ The context is a `TestPluginContext`:
 - `Faults` — strings reported through `IPluginContext.ReportFault`.
 - `Logger`, `Configuration`, `CarrierServices` are replaceable for a test.
 
-For integration tests that need real discovery, dependency ordering, or unload verification, use a
-real `PluginManager` with a temporary plugin root. The core is distributed through lip, so this
-package keeps its dependency to `Hosihikari.Plugin.Abstractions` only.
+For integration tests that need real discovery, dependency ordering, or unload verification, use
+`PluginManagerHarness`. It creates temporary `plugins/`, `data/`, and `config/` roots and exposes the
+real `PluginManager` plus captured reports:
 
-The package is MIT.
+```csharp
+using var harness = new PluginManagerHarness();
+harness.CreatePackage("MyPlugin", manifestJson, ("main.cs", source));
+harness.Manager.RegisterLoader(new MyLoader());
+harness.Load("MyPlugin");
+```
+
+The core is distributed through lip and also as the `Hosihikari.PluginManager` NuGet package,
+starting at 1.1.0. The package is MIT.
