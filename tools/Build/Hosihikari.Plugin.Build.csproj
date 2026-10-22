@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <PackageId>Hosihikari.Plugin.Build</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>HosihikariFramework</Authors>
+    <Description>MSBuild PackPlugin target for Hosihikari plugin packages.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/HosihikariFramework/PluginManager</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>hosihikari;minecraft;bedrock;plugin;build</PackageTags>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <NoPackageAnalysis>true</NoPackageAnalysis>
+    <TargetsForTfmSpecificContentInPackage>
+      $(TargetsForTfmSpecificContentInPackage);IncludePackTool
+    </TargetsForTfmSpecificContentInPackage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Pack/Hosihikari.Plugin.Pack.csproj"
+                      ReferenceOutputAssembly="false" />
+    <None Include="build/Hosihikari.Plugin.Build.targets"
+          Pack="true"
+          PackagePath="build/Hosihikari.Plugin.Build.targets" />
+    <None Include="build/Hosihikari.Plugin.Build.targets"
+          Pack="true"
+          PackagePath="buildTransitive/Hosihikari.Plugin.Build.targets" />
+    <None Include="buildMultiTargeting/Hosihikari.Plugin.Build.targets"
+          Pack="true"
+          PackagePath="buildMultiTargeting/Hosihikari.Plugin.Build.targets" />
+  </ItemGroup>
+
+  <Target Name="IncludePackTool" DependsOnTargets="Build">
+    <ItemGroup>
+      <TfmSpecificPackageFile Include="$(MSBuildThisFileDirectory)../Pack/bin/$(Configuration)/net10.0/**/*">
+        <PackagePath>tools/net10.0/%(RecursiveDir)</PackagePath>
+      </TfmSpecificPackageFile>
+    </ItemGroup>
+  </Target>
+
+</Project>

@@ -1,0 +1,11 @@
+<Project>
+
+  <!--
+    外层多目标构建没有具体的 TargetPath；NuGet 的 buildMultiTargeting 是唯一会
+    在这里导入的接缝。给出可读要求，内层由普通 targets 里的完整目标接管。
+  -->
+  <Target Name="PackPlugin">
+    <Error Text="PackPlugin 需要单个目标框架；请用 dotnet build -t:PackPlugin -f &lt;tfm&gt; 指定。" />
+  </Target>
+
+</Project>

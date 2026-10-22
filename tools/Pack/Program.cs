@@ -5,12 +5,27 @@ using Hosihikari.Internal.Pack;
 // 用法：
 //   Hosihikari.Plugin.Pack pack-loader <构建输出目录> <清单路径> <输出根目录>
 //   Hosihikari.Plugin.Pack pack-plugin   <构建输出目录> <清单路径> <输出根目录>
+//   Hosihikari.Plugin.Pack pack-plugin-from-assembly <入口程序集> <清单路径> <输出根目录>
 //   Hosihikari.Plugin.Pack <构建输出目录> <清单路径> <输出根目录> [--shared <程序集文件名>]...
 // pack-loader / pack-plugin 都用核心的共享层清单剔除共享层副本（ADR-0036）；
 // 两个名字只是说明调用方，规则只有一份。显式清单那条留给自定义共享层的载体。
 if (args.Length == 4 && (args[0] == "pack-loader" || args[0] == "pack-plugin"))
 {
     return PackLoader(args[1], args[2], args[3]);
+}
+
+// MSBuild 的 $(TargetPath) 是文件路径，不会有 $(TargetDir) 的收尾反斜杠；
+// 这条命令让 PackPlugin 目标避开 Windows 命令行转义陷阱。
+if (args.Length == 4 && args[0] == "pack-plugin-from-assembly")
+{
+    var directory = Path.GetDirectoryName(Path.GetFullPath(args[1]));
+    if (directory is null)
+    {
+        Console.WriteLine($"无法从入口程序集路径得到目录：{args[1]}");
+        return 2;
+    }
+
+    return PackLoader(directory, args[2], args[3]);
 }
 
 // --shared 可以重复，写的是**目标载体**的共享层清单 —— 它由载体声明，
@@ -20,6 +35,7 @@ if (args.Length < 3)
     Console.WriteLine("用法:");
     Console.WriteLine("  Hosihikari.Plugin.Pack pack-loader <构建输出目录> <清单路径> <输出根目录>");
     Console.WriteLine("  Hosihikari.Plugin.Pack pack-plugin   <构建输出目录> <清单路径> <输出根目录>");
+    Console.WriteLine("  Hosihikari.Plugin.Pack pack-plugin-from-assembly <入口程序集> <清单路径> <输出根目录>");
     Console.WriteLine("  Hosihikari.Plugin.Pack <构建输出目录> <清单路径> <输出根目录> [--shared <程序集文件名>]...");
     return 2;
 }
