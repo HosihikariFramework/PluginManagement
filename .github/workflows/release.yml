@@ -99,9 +99,15 @@ jobs:
           $version = dotnet msbuild src/Hosihikari.PluginManager.csproj -getProperty:PackageVersion
           if ($version -ne $tag) { throw "PackageVersion 是 $version，标签是 $tag" }
 
-      - name: 打包
+      - name: 打包核心
         working-directory: PluginManager
-        run: dotnet pack src/Hosihikari.PluginManager.csproj -c Release -o out
+        run: dotnet pack src/Hosihikari.PluginManager.csproj -c Release -o out --nologo
+
+      - name: 打包作者工具
+        working-directory: PluginManager
+        run: |
+          dotnet pack tools/Build/Hosihikari.Plugin.Build.csproj -c Release -o out --nologo
+          dotnet pack testing/Hosihikari.Testing/Hosihikari.Testing.csproj -c Release -o out --nologo
 
       # 换来的 key 只有一小时有效期，所以登录紧贴推送。
       - name: 换临时 API key
@@ -113,7 +119,7 @@ jobs:
       - name: 推送
         working-directory: PluginManager
         run: >
-          dotnet nuget push out/*.nupkg
+          dotnet nuget push "out/*.nupkg"
           --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
           --source https://api.nuget.org/v3/index.json
           --skip-duplicate
