@@ -27,6 +27,9 @@
     <None Include="build/Hosihikari.Plugin.Build.targets"
           Pack="true"
           PackagePath="buildTransitive/Hosihikari.Plugin.Build.targets" />
+    <None Include="buildMultiTargeting/Hosihikari.Plugin.Build.targets"
+          Pack="true"
+          PackagePath="buildMultiTargeting/Hosihikari.Plugin.Build.targets" />
   </ItemGroup>
 
   <Target Name="IncludePackTool" DependsOnTargets="Build">

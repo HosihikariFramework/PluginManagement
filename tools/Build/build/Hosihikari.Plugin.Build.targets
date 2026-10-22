@@ -6,8 +6,14 @@
     <HosihikariPackToolPath>$(MSBuildThisFileDirectory)../tools/net10.0/Hosihikari.Plugin.Pack.dll</HosihikariPackToolPath>
   </PropertyGroup>
 
+  <!-- 多目标项目的外层没有具体的 TargetPath；先要求调用方选一个 TFM。 -->
+  <Target Name="_ValidatePackPlugin">
+    <Error Condition="'$(TargetFramework)' == '' and '$(TargetFrameworks)' != ''"
+           Text="PackPlugin 需要单个目标框架；请用 dotnet build -t:PackPlugin -f &lt;tfm&gt; 指定。" />
+  </Target>
+
   <!-- 显式目标：普通 build 不产出 dist（ADR-0043）。 -->
-  <Target Name="PackPlugin" DependsOnTargets="Build">
+  <Target Name="PackPlugin" DependsOnTargets="_ValidatePackPlugin;Build">
     <Error Condition="!Exists('$(HosihikariPluginManifest)')"
            Text="找不到插件清单：$(HosihikariPluginManifest)" />
     <Error Condition="!Exists('$(HosihikariPackToolPath)')"
