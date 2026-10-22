@@ -64,9 +64,17 @@ var manager = new PluginManager(
 `TryGetPlugin(name, out var info)` reads one by name. `PluginInfo` carries `Name`, `Version`,
 `Loader`, `State`, `Enabled`, `IsLoader`, and `Dependencies`.
 
+The host supplies `loggerFactory`:
+
 ```csharp
+var log = loggerFactory.CreateLogger("PluginManager");
+
 foreach (var info in manager.Plugins)
-    Console.WriteLine($"{info.Name}: {info.State}, enabled={info.Enabled}");
+{
+    log.LogInformation(
+        "{Name} {Version} loader={Loader} state={State} enabled={Enabled}",
+        info.Name, info.Version, info.Loader, info.State, info.Enabled);
+}
 ```
 
 ## As a lip package

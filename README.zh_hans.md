@@ -54,9 +54,17 @@ var manager = new PluginManager(
 `Plugins` 返回所有槽位的只读快照，包含 `Detached`；`TryGetPlugin(name, out var info)` 按名字读取
 一个。`PluginInfo` 带 `Name`、`Version`、`Loader`、`State`、`Enabled`、`IsLoader` 与 `Dependencies`。
 
+`loggerFactory` 由宿主提供：
+
 ```csharp
+var log = loggerFactory.CreateLogger("PluginManager");
+
 foreach (var info in manager.Plugins)
-    Console.WriteLine($"{info.Name}: {info.State}, enabled={info.Enabled}");
+{
+    log.LogInformation(
+        "{Name} {Version} loader={Loader} state={State} enabled={Enabled}",
+        info.Name, info.Version, info.Loader, info.State, info.Enabled);
+}
 ```
 
 ## 作为 lip 包
