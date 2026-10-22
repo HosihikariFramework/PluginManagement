@@ -84,6 +84,27 @@ using (var host = new PluginTestHost(gate))
         host.Context.TestServices.Get<IProbeService>()?.Name ?? "（已释放）"));
 }
 
+var thrower = new ThrowUnloadPlugin();
+using (var host = new PluginTestHost(thrower))
+{
+    host.Load();
+    host.Enable();
+    var threw = false;
+    try
+    {
+        host.Unload();
+    }
+    catch (InvalidOperationException)
+    {
+        threw = true;
+    }
+
+    checks.Add((
+        "OnUnload 抛出仍释放作用域",
+        threw && host.Context.TestServices.Get<IProbeService>() is null,
+        $"threw={threw} service={host.Context.TestServices.Get<IProbeService>()?.Name ?? "已释放"}"));
+}
+
 using (var harness = new PluginManagerHarness())
 {
     harness.Manager.RegisterLoader(new ProbeLoader());
@@ -158,6 +179,16 @@ sealed class GatePlugin : IPlugin
     public PluginHookResult OnEnable() => PluginHookResult.Allow();
     public PluginHookResult OnDisable() => PluginHookResult.Allow();
     public void OnUnload() { }
+}
+
+sealed class ThrowUnloadPlugin : IPlugin
+{
+    public void OnLoad(IPluginContext context) =>
+        context.PluginServices.Register<IProbeService>(new ProbeService("throw-unload"));
+
+    public PluginHookResult OnEnable() => PluginHookResult.Allow();
+    public PluginHookResult OnDisable() => PluginHookResult.Allow();
+    public void OnUnload() => throw new InvalidOperationException("unload failed");
 }
 
 sealed class ProbeLoader : IPluginLoader

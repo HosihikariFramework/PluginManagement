@@ -33,4 +33,4 @@ harness.Load("MyPlugin");
 ```
 
 The core is distributed through lip and also as the `Hosihikari.PluginManager` NuGet package,
-starting at 1.1.0. The package is MIT.
+starting at 1.1.0. `Hosihikari.Testing` is MIT; the core package is LGPL-3.0-or-later.

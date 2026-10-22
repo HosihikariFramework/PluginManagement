@@ -58,9 +58,15 @@ public sealed class PluginTestHost : IDisposable
 
     public void Unload()
     {
-        Plugin.OnUnload();
-        Context.Scope.ReleaseAll();
-        _hooks.Add("unload");
+        try
+        {
+            Plugin.OnUnload();
+        }
+        finally
+        {
+            Context.Scope.ReleaseAll();
+            _hooks.Add("unload");
+        }
     }
 
     /// <summary>按 Load → Enable → Disable → Unload 走一遍；任一钩子拒绝时抛出并带上原因。</summary>
