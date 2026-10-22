@@ -119,7 +119,7 @@ jobs:
       - name: 推送
         working-directory: PluginManager
         run: >
-          dotnet nuget push out/*.nupkg
+          dotnet nuget push "out/*.nupkg"
           --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
           --source https://api.nuget.org/v3/index.json
           --skip-duplicate
