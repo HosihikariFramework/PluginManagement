@@ -60,3 +60,60 @@ jobs:
             PluginManager/artifacts/*.zip \
             --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" --generate-notes
+
+  # 核心同时以 NuGet 包发布，供 Testing/工具链引用。lip 与 NuGet 共用 v* 标签，
+  # 但各自校验自己的版本事实源。
+  nuget:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # 换 OIDC 令牌（Trusted Publishing）
+
+    steps:
+      - name: 本仓
+        uses: actions/checkout@v7
+        with:
+          path: PluginManager
+
+      - name: 契约
+        uses: actions/checkout@v7
+        with:
+          repository: HosihikariFramework/PluginAbstractions
+          path: Plugin.Abstractions
+
+      - name: McMaster fork
+        uses: actions/checkout@v7
+        with:
+          repository: HosihikariFramework/Hosihikari.McMaster.NETCore.Plugins
+          path: McMaster.NETCore.Plugins
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 版本一致
+        shell: pwsh
+        working-directory: PluginManager
+        run: |
+          $tag = '${{ github.ref_name }}' -replace '^v', ''
+          $version = dotnet msbuild src/Hosihikari.PluginManager.csproj -getProperty:PackageVersion
+          if ($version -ne $tag) { throw "PackageVersion 是 $version，标签是 $tag" }
+
+      - name: 打包
+        working-directory: PluginManager
+        run: dotnet pack src/Hosihikari.PluginManager.csproj -c Release -o out
+
+      # 换来的 key 只有一小时有效期，所以登录紧贴推送。
+      - name: 换临时 API key
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: 推送
+        working-directory: PluginManager
+        run: >
+          dotnet nuget push out/*.nupkg
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
