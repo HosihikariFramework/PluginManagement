@@ -3,10 +3,21 @@ using Hosihikari.Testing;
 
 var checks = new List<(string Name, bool Passed, string Detail)>();
 
+var invalidHostRejected = false;
+try
+{
+    _ = new PluginTestHost(new ProbePlugin(), "../escape");
+}
+catch (ArgumentException)
+{
+    invalidHostRejected = true;
+}
+
 var probe = new ProbePlugin();
 using (var host = new PluginTestHost(probe, "Probe"))
 {
     host.RunLifecycle();
+    checks.Add(("测试宿主拒绝越界的插件名", invalidHostRejected, invalidHostRejected ? "已拒绝" : "（没有拒绝）"));
     checks.Add((
         "生命周期按 Load → Enable → Disable → Unload 驱动",
         host.HookLog.SequenceEqual(["load", "enable", "disable", "unload"]),

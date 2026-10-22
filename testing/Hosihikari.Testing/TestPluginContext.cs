@@ -15,6 +15,12 @@ public sealed class TestPluginContext : IPluginContext
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        if (Path.IsPathRooted(name)
+            || name is "." or ".."
+            || name.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) >= 0)
+        {
+            throw new ArgumentException("测试插件名必须是单个目录名", nameof(name));
+        }
 
         Name = name;
         PackageDirectory = Path.Combine(root, "plugins", name);
