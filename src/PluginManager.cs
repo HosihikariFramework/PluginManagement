@@ -15,6 +15,10 @@ public sealed class PluginManager
     private readonly string _pluginsRoot;
     private readonly string _dataRoot;
     private readonly string _configRoot;
+    // Task.WaitAsync / Task.Delay 的计时器上限；超过它会抛 ArgumentOutOfRangeException。
+    private static readonly TimeSpan MaxUnloadVerificationTimeout =
+        TimeSpan.FromMilliseconds(uint.MaxValue - 1);
+
     private readonly TimeSpan _unloadVerificationTimeout;
     private readonly Action<string> _reportFault;
     private readonly IServiceProvider? _carrierServices;
@@ -60,12 +64,14 @@ public sealed class PluginManager
         PluginManagerOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
-        if (options.UnloadVerificationTimeout <= TimeSpan.Zero
-            && options.UnloadVerificationTimeout != Timeout.InfiniteTimeSpan)
+        if (options.UnloadVerificationTimeout != Timeout.InfiniteTimeSpan
+            && (options.UnloadVerificationTimeout <= TimeSpan.Zero
+                || options.UnloadVerificationTimeout > MaxUnloadVerificationTimeout))
         {
             throw new ArgumentOutOfRangeException(
                 nameof(options),
-                "UnloadVerificationTimeout 必须为正，或使用 Timeout.InfiniteTimeSpan。");
+                "UnloadVerificationTimeout 必须为正且不超过约 49.7 天，"
+                + "或使用 Timeout.InfiniteTimeSpan。");
         }
 
         _pluginsRoot = pluginsRoot;
@@ -731,6 +737,7 @@ public sealed class PluginManager
         }
 
         slot.Scope = null;
+        slot.Enabled = false;
         slot.State = PluginState.Detached;
         return null;
     }

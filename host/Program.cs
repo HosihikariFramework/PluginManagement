@@ -329,7 +329,7 @@ timeoutHost.RegisterLoader(timeoutLoader);
 var timeoutLoaded = timeoutHost.Load(Path.Combine(stage, "parented", "Pinned"));
 var timeoutFirst = timeoutHost.Unload("Pinned");
 var timeoutDetached = timeoutHost.TryGetPlugin("Pinned", out var timeoutInfo)
-    && timeoutInfo.State == PluginState.Detached;
+    && timeoutInfo is { State: PluginState.Detached, Enabled: false };
 timeoutLoader.Pinned = false;
 var timeoutSecond = timeoutHost.Unload("Pinned");
 var timeoutGone = !timeoutHost.TryGetPlugin("Pinned", out _);
@@ -341,6 +341,30 @@ checks.Add((
         && timeoutLoader.WaitCalls == 1,
     $"loaded={timeoutLoaded} first={timeoutFirst.Error ?? "成功"} detached={timeoutDetached} "
         + $"second={timeoutSecond.Released} waits={timeoutLoader.WaitCalls}"
+));
+
+// A51：WaitAsync 计时器不支持的超时在构造期拒绝，避免每次卸载都失败且不验证。
+var invalidTimeoutRefused = false;
+try
+{
+    _ = new PluginManager(
+        pluginsRoot,
+        Path.Combine(stage, "invalid-timeout", "data"),
+        Path.Combine(stage, "invalid-timeout", "config"),
+        _ => { },
+        null,
+        null,
+        new PluginManagerOptions { UnloadVerificationTimeout = TimeSpan.FromDays(60) });
+}
+catch (ArgumentOutOfRangeException)
+{
+    invalidTimeoutRefused = true;
+}
+
+checks.Add((
+    "A51 拒绝超出计时器范围的卸载超时",
+    invalidTimeoutRefused,
+    invalidTimeoutRefused ? "构造期已拒绝" : "（没有拒绝）"
 ));
 
 // A29：拒绝启用留在册、未启用（ADR-0030）
