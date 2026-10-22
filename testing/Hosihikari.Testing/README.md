@@ -12,7 +12,8 @@ host.RunLifecycle();
 // host.HookLog: load → enable → disable → unload
 ```
 
-The context is a `TestPluginContext`:
+The host mirrors the production scope: event and timer callbacks only fire while enabled, and
+`Unload` releases subscriptions, timers, and services. The context is a `TestPluginContext`:
 
 - `TestEvents` — synchronous event bus; handler exceptions land in `HandlerErrors`.
 - `TestScheduler` — manual scheduler; `RunOnce()` and `RunPeriodic()` decide when work runs.
