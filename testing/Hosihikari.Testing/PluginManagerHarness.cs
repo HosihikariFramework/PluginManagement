@@ -48,8 +48,20 @@ public sealed class PluginManagerHarness : IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(manifestJson);
+        if (Path.IsPathRooted(name)
+            || name is "." or ".."
+            || name.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) >= 0)
+        {
+            throw new ArgumentException("测试包名必须是单个目录名", nameof(name));
+        }
 
-        var directory = Path.Combine(PluginsRoot, name);
+        var directory = Path.GetFullPath(Path.Combine(PluginsRoot, name));
+        var pluginRoot = Path.GetFullPath(PluginsRoot) + Path.DirectorySeparatorChar;
+        if (!directory.StartsWith(pluginRoot, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("测试包目录越界", nameof(name));
+        }
+
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, "manifest.json"), manifestJson);
         foreach (var (path, content) in files)

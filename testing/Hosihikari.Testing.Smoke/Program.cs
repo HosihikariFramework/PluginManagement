@@ -107,6 +107,18 @@ using (var host = new PluginTestHost(thrower))
 
 using (var harness = new PluginManagerHarness())
 {
+    var escaped = false;
+    try
+    {
+        harness.CreatePackage("../escape", "{}");
+    }
+    catch (ArgumentException)
+    {
+        escaped = true;
+    }
+
+    checks.Add(("管理者辅助拒绝越界的包名", escaped, escaped ? "已拒绝" : "（没有拒绝）"));
+
     harness.Manager.RegisterLoader(new ProbeLoader());
     harness.CreatePackage(
         "HarnessProbe",
