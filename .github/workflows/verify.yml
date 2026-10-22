@@ -12,21 +12,21 @@ jobs:
       - name: 本仓
         uses: actions/checkout@v7
         with:
-          path: Hosihikari.PluginManager
+          path: PluginManager
 
       # 契约与核心一起改：并列摆放才能编到新契约；单独 clone 仍可走 nuget.org 的包。
       - name: 契约
         uses: actions/checkout@v7
         with:
           repository: HosihikariFramework/PluginAbstractions
-          path: Hosihikari.Abstractions
+          path: Plugin.Abstractions
 
       # 本机库的 RID 优先解析需要 fork；核心按 ../.. 找它。
       - name: McMaster fork
         uses: actions/checkout@v7
         with:
           repository: HosihikariFramework/Hosihikari.McMaster.NETCore.Plugins
-          path: Hosihikari.McMaster.NETCore.Plugins
+          path: McMaster.NETCore.Plugins
 
       - uses: actions/setup-dotnet@v6
         with:
@@ -35,12 +35,12 @@ jobs:
       # 宿主把整份断言清单跑一遍，任一条不过就以非零退出 —— 门槛就在这里（ADR-0015）。
       # 这里不写条数：它会变，而写死的数字只会变成下一处过时的注释。
       - name: 跑断言
-        working-directory: Hosihikari.PluginManager
+        working-directory: PluginManager
         run: dotnet run --project host/Hosihikari.PluginManager.Host.csproj -c Release
 
       # 核心包本身也过一遍打包，避免发布时才暴露形状问题。
       - name: 打包检查
-        working-directory: Hosihikari.PluginManager
+        working-directory: PluginManager
         run: |
           set -euo pipefail
           jq -e 'all(.variants[]; (.label // "") | test("^[a-z0-9_]*$"))' tooth.json > /dev/null

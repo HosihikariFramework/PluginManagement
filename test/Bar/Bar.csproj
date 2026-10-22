@@ -7,13 +7,13 @@
     <AssemblyName>Bar</AssemblyName>
   </PropertyGroup>
 
-  <ItemGroup Condition="Exists('../../../Hosihikari.Abstractions/src/Hosihikari.Plugin.Abstractions.csproj')">
-    <ProjectReference Include="../../../Hosihikari.Abstractions/src/Hosihikari.Plugin.Abstractions.csproj"
+  <ItemGroup Condition="Exists('../../../Plugin.Abstractions/src/Hosihikari.Plugin.Abstractions.csproj')">
+    <ProjectReference Include="../../../Plugin.Abstractions/src/Hosihikari.Plugin.Abstractions.csproj"
                       Private="false"
                       ExcludeAssets="runtime" />
   </ItemGroup>
 
-  <ItemGroup Condition="!Exists('../../../Hosihikari.Abstractions/src/Hosihikari.Plugin.Abstractions.csproj')">
+  <ItemGroup Condition="!Exists('../../../Plugin.Abstractions/src/Hosihikari.Plugin.Abstractions.csproj')">
     <PackageReference Include="Hosihikari.Plugin.Abstractions" Version="[1.0.0]" ExcludeAssets="runtime" />
   </ItemGroup>
 

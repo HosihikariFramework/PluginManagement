@@ -14,20 +14,20 @@ jobs:
       - name: 本仓
         uses: actions/checkout@v7
         with:
-          path: Hosihikari.PluginManager
+          path: PluginManager
 
       # 核心按 ../.. 找契约与 McMaster fork；并列摆放才能编到源码。
       - name: 契约
         uses: actions/checkout@v7
         with:
           repository: HosihikariFramework/PluginAbstractions
-          path: Hosihikari.Abstractions
+          path: Plugin.Abstractions
 
       - name: McMaster fork
         uses: actions/checkout@v7
         with:
           repository: HosihikariFramework/Hosihikari.McMaster.NETCore.Plugins
-          path: Hosihikari.McMaster.NETCore.Plugins
+          path: McMaster.NETCore.Plugins
 
       - uses: actions/setup-dotnet@v6
         with:
@@ -35,7 +35,7 @@ jobs:
 
       - name: 校验 tooth 版本
         shell: bash
-        working-directory: Hosihikari.PluginManager
+        working-directory: PluginManager
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
@@ -48,7 +48,7 @@ jobs:
         id: version
 
       - name: 打包
-        working-directory: Hosihikari.PluginManager
+        working-directory: PluginManager
         run: bash ./pack.sh "${{ steps.version.outputs.version }}"
 
       - name: 发 release
@@ -57,6 +57,6 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "${{ github.ref_name }}" \
-            Hosihikari.PluginManager/artifacts/*.zip \
+            PluginManager/artifacts/*.zip \
             --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" --generate-notes
