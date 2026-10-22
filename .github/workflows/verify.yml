@@ -38,6 +38,11 @@ jobs:
         working-directory: PluginManager
         run: dotnet run --project host/Hosihikari.PluginManager.Host.csproj -c Release
 
+      # MSBuild 打包包：PackPlugin 目标在一次性插件项目上跑通。
+      - name: MSBuild 打包包冒烟
+        working-directory: PluginManager
+        run: bash tools/Build/smoke.sh
+
       # 核心包本身也过一遍打包，避免发布时才暴露形状问题。
       - name: 打包检查
         working-directory: PluginManager

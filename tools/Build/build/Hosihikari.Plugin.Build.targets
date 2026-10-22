@@ -1,0 +1,20 @@
+<Project>
+
+  <PropertyGroup>
+    <HosihikariPluginManifest Condition="'$(HosihikariPluginManifest)' == ''">$(MSBuildProjectDirectory)/manifest.json</HosihikariPluginManifest>
+    <HosihikariPluginOutputRoot Condition="'$(HosihikariPluginOutputRoot)' == ''">$(MSBuildProjectDirectory)/dist</HosihikariPluginOutputRoot>
+    <HosihikariPackToolPath>$(MSBuildThisFileDirectory)../tools/net10.0/Hosihikari.Plugin.Pack.dll</HosihikariPackToolPath>
+  </PropertyGroup>
+
+  <!-- 显式目标：普通 build 不产出 dist（ADR-0043）。 -->
+  <Target Name="PackPlugin" DependsOnTargets="Build">
+    <Error Condition="!Exists('$(HosihikariPluginManifest)')"
+           Text="找不到插件清单：$(HosihikariPluginManifest)" />
+    <Error Condition="!Exists('$(HosihikariPackToolPath)')"
+           Text="找不到 Hosihikari 打包器：$(HosihikariPackToolPath)" />
+    <MakeDir Directories="$(HosihikariPluginOutputRoot)" />
+    <!-- TargetPath 是文件路径；避开 TargetDir 收尾反斜杠对引号的转义。 -->
+    <Exec Command="dotnet &quot;$(HosihikariPackToolPath)&quot; pack-plugin-from-assembly &quot;$(TargetPath)&quot; &quot;$(HosihikariPluginManifest)&quot; &quot;$(HosihikariPluginOutputRoot)&quot;" />
+  </Target>
+
+</Project>
