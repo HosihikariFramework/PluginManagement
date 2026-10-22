@@ -38,6 +38,7 @@ do the same when changing the contract or native probing.
 
 ## Context
 
-- [Design record](https://github.com/HosihikariFramework/Design) — GLOSSARY and ADRs.
+- Design decisions and terminology are kept by maintainers outside the public repositories; ask for
+  the relevant decision when changing lifecycle or public API.
 - [Documentation](https://hf.srcz.one/) — user-facing guides.
 - Public default branches are protected. Work on a branch, open a pull request, and squash merge.
