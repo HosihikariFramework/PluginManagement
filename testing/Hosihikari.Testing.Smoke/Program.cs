@@ -116,6 +116,18 @@ using (var host = new PluginTestHost(thrower))
         $"threw={threw} service={host.Context.TestServices.Get<IProbeService>()?.Name ?? "已释放"}"));
 }
 
+var unloadPublish = new UnloadPublishPlugin();
+using (var host = new PluginTestHost(unloadPublish))
+{
+    host.Load();
+    host.Enable();
+    host.Unload();
+    checks.Add((
+        "直接卸载时先关闸门再调 OnUnload",
+        unloadPublish.Seen == 0,
+        $"seen={unloadPublish.Seen}"));
+}
+
 using (var harness = new PluginManagerHarness())
 {
     var escaped = false;
@@ -202,6 +214,22 @@ sealed class GatePlugin : IPlugin
     public PluginHookResult OnEnable() => PluginHookResult.Allow();
     public PluginHookResult OnDisable() => PluginHookResult.Allow();
     public void OnUnload() { }
+}
+
+sealed class UnloadPublishPlugin : IPlugin
+{
+    private IPluginContext? _context;
+    public int Seen { get; private set; }
+
+    public void OnLoad(IPluginContext context)
+    {
+        _context = context;
+        context.Events.Subscribe<string>(_ => Seen++);
+    }
+
+    public PluginHookResult OnEnable() => PluginHookResult.Allow();
+    public PluginHookResult OnDisable() => PluginHookResult.Allow();
+    public void OnUnload() => _context?.Events.Publish("during-unload");
 }
 
 sealed class ThrowUnloadPlugin : IPlugin

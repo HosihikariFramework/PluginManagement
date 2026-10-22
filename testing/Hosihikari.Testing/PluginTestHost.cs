@@ -58,6 +58,7 @@ public sealed class PluginTestHost : IDisposable
 
     public void Unload()
     {
+        Context.Scope.Close();
         try
         {
             Plugin.OnUnload();
