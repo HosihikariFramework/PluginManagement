@@ -42,6 +42,33 @@ The RID-first native library probe uses the McMaster fork; check that out as a s
 - **This repository alone** (CI, and any external consumer) → `PackageReference`, pinned to an exact
   version.
 
+## Options and status
+
+The constructor overload accepts `PluginManagerOptions`. `UnloadVerificationTimeout` defaults to
+30 seconds; a finite value must be positive and no more than about 49.7 days, and
+`Timeout.InfiniteTimeSpan` disables the timer. A timeout is a failed unload: the report says so,
+and the slot stays `Detached`, so `Plugins` keeps returning it.
+
+```csharp
+var options = new PluginManagerOptions
+{
+    UnloadVerificationTimeout = TimeSpan.FromSeconds(60),
+};
+
+var manager = new PluginManager(
+    pluginsRoot, dataRoot, configRoot, reportFault,
+    carrierServices, onRemoved, options);
+```
+
+`Plugins` returns a read-only snapshot of every slot, including `Detached` ones;
+`TryGetPlugin(name, out var info)` reads one by name. `PluginInfo` carries `Name`, `Version`,
+`Loader`, `State`, `Enabled`, `IsLoader`, and `Dependencies`.
+
+```csharp
+foreach (var info in manager.Plugins)
+    Console.WriteLine($"{info.Name}: {info.State}, enabled={info.Enabled}");
+```
+
 ## As a lip package
 
 A `v*` tag builds `hosihikari-core-<version>.zip` and publishes it as

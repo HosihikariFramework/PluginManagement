@@ -34,6 +34,31 @@ CI 跑的就是这一条命令，走的也是外部插件作者拿到契约的�
 
 本机库的 RID 优先解析走 McMaster 的 fork；它也必须作为兄弟目录检出（CI 就是这么摆的）。
 
+## 配置与状态
+
+构造函数重载接受 `PluginManagerOptions`。`UnloadVerificationTimeout` 默认 30 秒；有限值必须为正且
+不超过约 49.7 天，`Timeout.InfiniteTimeSpan` 关闭计时器。超时按卸载失败记录，报告会如实写明；
+槽位保持 `Detached`，因此 `Plugins` 仍会返回它。
+
+```csharp
+var options = new PluginManagerOptions
+{
+    UnloadVerificationTimeout = TimeSpan.FromSeconds(60),
+};
+
+var manager = new PluginManager(
+    pluginsRoot, dataRoot, configRoot, reportFault,
+    carrierServices, onRemoved, options);
+```
+
+`Plugins` 返回所有槽位的只读快照，包含 `Detached`；`TryGetPlugin(name, out var info)` 按名字读取
+一个。`PluginInfo` 带 `Name`、`Version`、`Loader`、`State`、`Enabled`、`IsLoader` 与 `Dependencies`。
+
+```csharp
+foreach (var info in manager.Plugins)
+    Console.WriteLine($"{info.Name}: {info.State}, enabled={info.Enabled}");
+```
+
 ## 作为 lip 包
 
 打 `v*` 标签会构建 `hosihikari-core-<版本>.zip`，发布为
