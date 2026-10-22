@@ -43,6 +43,11 @@ jobs:
         working-directory: PluginManager
         run: bash tools/Build/smoke.sh
 
+      # 作者测试包：内存上下文、手动调度与生命周期宿主。
+      - name: Testing 包冒烟
+        working-directory: PluginManager
+        run: dotnet run --project testing/Hosihikari.Testing.Smoke/Hosihikari.Testing.Smoke.csproj -c Release
+
       # 核心包本身也过一遍打包，避免发布时才暴露形状问题。
       - name: 打包检查
         working-directory: PluginManager
