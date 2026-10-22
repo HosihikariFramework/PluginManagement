@@ -44,6 +44,7 @@ Stage("Foo", withConfig: true);
 Stage("Bar", withConfig: false);
 StageBroken();
 StageScript();
+StageDiagnostic();
 StagePinned();
 StageGuarded("Guarded");
 StageGuarded("Faulty");
@@ -92,6 +93,7 @@ host.RegisterLoader(new ScriptPluginLoader());
 host.RegisterLoader(pinnedLoader);
 host.RegisterLoader(guardedLoader);
 host.RegisterLoader(new ThrowingPluginLoader());
+host.RegisterLoader(new DiagnosticsPluginLoader());
 
 Console.WriteLine("=== 加载 ===");
 host.LoadAll();
@@ -109,6 +111,37 @@ checks.Add((
     "A25 同名 Loader 被拒并报错",
     duplicateRefused && reported.Any(entry => entry.Contains("插件种类名必须唯一")),
     reported.LastOrDefault(entry => entry.Contains("插件种类名必须唯一")) ?? "（没有报告）"
+));
+
+// A48：加载器诊断在 Load 之前把问题并入报告（ADR-0041）
+var diagnosticProblem = reported.FirstOrDefault(
+    entry => entry.Contains("Diagnostic") && entry.Contains("缺少入口文件"));
+checks.Add((
+    "A48 加载器诊断进入加载报告",
+    diagnosticProblem is not null && !host.LoadedNames.Contains("Diagnostic"),
+    diagnosticProblem ?? "（没有诊断报告）"
+));
+
+// A49：状态快照是只读视图，带版本、加载器、启用状态与依赖（ADR-0041）
+var fooSnapshot = host.Plugins.FirstOrDefault(plugin => plugin.Name == "Foo");
+var snapshotFound = host.TryGetPlugin("Foo", out var fooInfo)
+    && fooInfo is { Name: "Foo", State: PluginState.Loaded, Enabled: true };
+var snapshotOk = fooSnapshot is
+{
+    Version: "1.0.0",
+    Loader: "assembly",
+    State: PluginState.Loaded,
+    Enabled: true,
+}
+&& fooSnapshot.Dependencies.Any(dependency => dependency.Name == PluginContractInfo.ParentName)
+&& snapshotFound;
+checks.Add((
+    "A49 插件状态快照读出依赖与启用状态",
+    snapshotOk,
+    fooSnapshot is null
+        ? "（没有 Foo 快照）"
+        : $"{fooSnapshot.Name} {fooSnapshot.Version} {fooSnapshot.Loader} "
+            + $"{fooSnapshot.State} enabled={fooSnapshot.Enabled} deps={fooSnapshot.Dependencies.Count}"
 ));
 
 // A9：一个 handler 抛出，其余照常收到（ADR-0014）
@@ -280,6 +313,34 @@ checks.Add((
         && !host.LoadedNames.Contains("Pinned"),
     $"loaded={concurrentLoaded} waiting={firstWaiting} released={concurrentReleased} "
         + $"waits={pinnedLoader.WaitCalls - waitsBefore}"
+));
+
+// A50：回收验证超时按失败记，槽位留在待回收；下一次卸载复用同一个验证任务（ADR-0042）。
+var timeoutLoader = new PinnedPluginLoader { Pinned = true };
+var timeoutHost = new PluginManager(
+    pluginsRoot,
+    Path.Combine(stage, "timeout", "data"),
+    Path.Combine(stage, "timeout", "config"),
+    _ => { },
+    null,
+    null,
+    new PluginManagerOptions { UnloadVerificationTimeout = TimeSpan.FromMilliseconds(150) });
+timeoutHost.RegisterLoader(timeoutLoader);
+var timeoutLoaded = timeoutHost.Load(Path.Combine(stage, "parented", "Pinned"));
+var timeoutFirst = timeoutHost.Unload("Pinned");
+var timeoutDetached = timeoutHost.TryGetPlugin("Pinned", out var timeoutInfo)
+    && timeoutInfo.State == PluginState.Detached;
+timeoutLoader.Pinned = false;
+var timeoutSecond = timeoutHost.Unload("Pinned");
+var timeoutGone = !timeoutHost.TryGetPlugin("Pinned", out _);
+checks.Add((
+    "A50 回收验证超时按失败记并保留待回收",
+    timeoutLoaded && !timeoutFirst.Released
+        && timeoutFirst.Error?.Contains("回收验证超时") == true
+        && timeoutDetached && timeoutSecond.Released && timeoutGone
+        && timeoutLoader.WaitCalls == 1,
+    $"loaded={timeoutLoaded} first={timeoutFirst.Error ?? "成功"} detached={timeoutDetached} "
+        + $"second={timeoutSecond.Released} waits={timeoutLoader.WaitCalls}"
 ));
 
 // A29：拒绝启用留在册、未启用（ADR-0030）
@@ -727,6 +788,21 @@ void StageScript()
           "type": "hosihikari",
           "dependencies": [ { "name": "Bar" } ],
           "extraInfo": { "api_version": "2", "manifest_version": "1", "loader": "script" }
+        }
+        """);
+}
+
+// 诊断加载器会拒掉这个包；入口文件故意不存在，证明装载没有开始。
+void StageDiagnostic()
+{
+    var package = Path.Combine(pluginsRoot, "Diagnostic");
+    Directory.CreateDirectory(package);
+    File.WriteAllText(Path.Combine(package, "manifest.json"), """
+        {
+          "name": "Diagnostic",
+          "entry": "Diagnostic.dll",
+          "type": "hosihikari",
+          "extraInfo": { "api_version": "2", "manifest_version": "1", "loader": "diagnostic" }
         }
         """);
 }

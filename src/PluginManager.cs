@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Hocon.Extensions.Configuration;
 using Microsoft.Extensions.Configuration;
@@ -14,6 +15,7 @@ public sealed class PluginManager
     private readonly string _pluginsRoot;
     private readonly string _dataRoot;
     private readonly string _configRoot;
+    private readonly TimeSpan _unloadVerificationTimeout;
     private readonly Action<string> _reportFault;
     private readonly IServiceProvider? _carrierServices;
     private readonly Action<string>? _onRemoved;
@@ -36,10 +38,40 @@ public sealed class PluginManager
         Action<string> reportFault,
         IServiceProvider? carrierServices = null,
         Action<string>? onRemoved = null)
+        : this(
+            pluginsRoot,
+            dataRoot,
+            configRoot,
+            reportFault,
+            carrierServices,
+            onRemoved,
+            new PluginManagerOptions())
     {
+    }
+
+    /// <summary>带显式配置的构造函数；现有构造函数保持原签名。</summary>
+    public PluginManager(
+        string pluginsRoot,
+        string dataRoot,
+        string configRoot,
+        Action<string> reportFault,
+        IServiceProvider? carrierServices,
+        Action<string>? onRemoved,
+        PluginManagerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.UnloadVerificationTimeout <= TimeSpan.Zero
+            && options.UnloadVerificationTimeout != Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "UnloadVerificationTimeout 必须为正，或使用 Timeout.InfiniteTimeSpan。");
+        }
+
         _pluginsRoot = pluginsRoot;
         _dataRoot = dataRoot;
         _configRoot = configRoot;
+        _unloadVerificationTimeout = options.UnloadVerificationTimeout;
         _reportFault = reportFault;
         _carrierServices = carrierServices;
         _onRemoved = onRemoved;
@@ -141,6 +173,48 @@ public sealed class PluginManager
             }
         }
     }
+
+    /// <summary>所有仍在表中的插件快照，包含待回收的那些。快照只读，不交出插件句柄（ADR-0041）。</summary>
+    public IReadOnlyList<PluginInfo> Plugins
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _slots.Values
+                    .OrderBy(slot => slot.Manifest.Name, StringComparer.Ordinal)
+                    .Select(ToInfo)
+                    .ToArray();
+            }
+        }
+    }
+
+    /// <summary>按名字取一个插件快照；待回收的插件也能取到，状态会显示为 Detached。</summary>
+    public bool TryGetPlugin(string name, [NotNullWhen(true)] out PluginInfo? plugin)
+    {
+        lock (_gate)
+        {
+            if (_slots.TryGetValue(name, out var slot))
+            {
+                plugin = ToInfo(slot);
+                return true;
+            }
+
+            plugin = null;
+            return false;
+        }
+    }
+
+    private static PluginInfo ToInfo(Slot slot) => new(
+        slot.Manifest.Name,
+        slot.Manifest.Version,
+        slot.Manifest.Loader,
+        slot.State,
+        slot.Enabled,
+        slot.IsLoader,
+        slot.Manifest.Dependencies
+            .Select(dependency => new PluginDependencyInfo(dependency.Name, dependency.VersionRange))
+            .ToArray());
 
     /// <summary>载体适配器要把载体事件并进来，所以事件总线得对外可达（ADR-0007）。</summary>
     public IEventBus Events => _events;
@@ -487,9 +561,18 @@ public sealed class PluginManager
         }
 
         bool released;
+        var timedOut = false;
         try
         {
-            released = verification.GetAwaiter().GetResult();
+            released = _unloadVerificationTimeout == Timeout.InfiniteTimeSpan
+                ? verification.GetAwaiter().GetResult()
+                : verification.WaitAsync(_unloadVerificationTimeout).GetAwaiter().GetResult();
+        }
+        catch (TimeoutException)
+        {
+            (reports ??= []).Add($"{name}: 回收验证超时（{_unloadVerificationTimeout}）");
+            released = false;
+            timedOut = true;
         }
         catch (Exception ex)
         {
@@ -507,7 +590,8 @@ public sealed class PluginManager
                     : UnloadResult.Failed($"{name} 已不在册，回收验证未通过");
             }
 
-            if (ReferenceEquals(current.Verification, verification))
+            // 超时保留进行中的任务，下一次卸载继续等它；其它失败清空任务，下一次重新验证。
+            if (!timedOut && ReferenceEquals(current.Verification, verification))
             {
                 current.Verification = null;
             }
@@ -516,6 +600,12 @@ public sealed class PluginManager
             {
                 _slots.Remove(name);
                 return UnloadResult.Ok();
+            }
+
+            if (timedOut)
+            {
+                return UnloadResult.Failed(
+                    $"{name}: 回收验证超时（{_unloadVerificationTimeout}） —— 再卸载一次会重新验证");
             }
 
             // 说"回收"而不是"ALC"：释放句柄长什么样是 Loader 自己的事（ADR-0010）。
@@ -681,6 +771,30 @@ public sealed class PluginManager
             {
                 reports.Add($"{manifest.Name}: 没有能处理 loader={manifest.Loader} 的加载器");
                 return false;
+            }
+
+            if (loader is IPluginLoaderDiagnostics diagnostics)
+            {
+                IReadOnlyList<string> problems;
+                try
+                {
+                    problems = diagnostics.Validate(manifest, package.Directory);
+                }
+                catch (Exception ex)
+                {
+                    reports.Add($"{manifest.Name}: 加载器诊断抛出 —— {ex.Demystify()}");
+                    return false;
+                }
+
+                if (problems is { Count: > 0 })
+                {
+                    foreach (var problem in problems)
+                    {
+                        reports.Add($"{manifest.Name}: {problem}");
+                    }
+
+                    return false;
+                }
             }
 
             var dataDirectory = Path.Combine(_dataRoot, manifest.Name);
